@@ -4,10 +4,15 @@ package p
 
 import "m/q"
 
-var X int = q.Q
-var _ = X
+func X() int {
+	return q.Q + Y
+}
+
+var _ = X()
 -- y.go --
 package p
+
+var Y int
 -- q/q.go --
 package q
 
@@ -16,18 +21,25 @@ var Q int
 diff old/x.go new/x.go
 --- old/x.go
 +++ new/x.go
-@@ -2,5 +2,4 @@
+@@ -2,8 +2,4 @@
 
  import "m/q"
 
--var X int = q.Q
- var _ = X
+-func X() int {
+-	return q.Q + Y
+-}
+-
+ var _ = X()
 diff old/y.go new/y.go
 --- old/y.go
 +++ new/y.go
-@@ -1 +1,5 @@
+@@ -1,3 +1,9 @@
  package p
-+
+
 +import "m/q"
 +
-+var X int = q.Q
+ var Y int
++
++func X() int {
++	return q.Q + Y
++}

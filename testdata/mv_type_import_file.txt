@@ -4,24 +4,26 @@ package p
 
 import "m/q"
 
-var X int = q.Q
-var _ = X
+type X = q.Q
+
+var _ X
 -- y.go --
 package p
 -- q/q.go --
 package q
 
-var Q int
+type Q int
 -- stdout --
 diff old/x.go new/x.go
 --- old/x.go
 +++ new/x.go
-@@ -2,5 +2,4 @@
+@@ -2,6 +2,4 @@
 
  import "m/q"
 
--var X int = q.Q
- var _ = X
+-type X = q.Q
+-
+ var _ X
 diff old/y.go new/y.go
 --- old/y.go
 +++ new/y.go
@@ -30,4 +32,4 @@ diff old/y.go new/y.go
 +
 +import "m/q"
 +
-+var X int = q.Q
++type X = q.Q

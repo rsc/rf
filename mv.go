@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/tools/go/packages"
+	"rsc.io/rf/edit"
 	"rsc.io/rf/refactor"
 )
 
@@ -75,9 +76,18 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 			return nil, false, fmt.Errorf("cannot move %s to directory %s", item.Kind, dst.Name)
 		}
 
-		if len(srcs) == 1 && srcs[0].Kind == refactor.ItemVar && dst.Kind == refactor.ItemFile {
+		if len(srcs) == 1 && srcs[0].Outer == nil && srcs[0].Kind != refactor.ItemFile && dst.Kind == refactor.ItemFile {
 			mvCode(snap, srcs[0], dst.Name)
 			return nil, false, nil
+		}
+		if len(srcs) == 1 && srcs[0].Outer == nil && srcs[0].Kind != refactor.ItemFile && dst.Kind == refactor.ItemDir {
+			for _, pkg := range snap.Packages() {
+				if pkg.PkgPath == dst.Name {
+					mvCodePkg(snap, srcs[0], pkg)
+					return nil, false, nil
+				}
+			}
+			return []string{dst.Name}, false, nil
 		}
 	}
 
@@ -402,23 +412,81 @@ func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
 	}
 
 	stack := snap.FindAST(old.Obj.Pos())
-	decl := stack[2].(*ast.GenDecl)
+	var decl ast.Node
+	switch n := stack[2].(type) {
+	case *ast.GenDecl:
+		decl = n
+	case *ast.FuncDecl:
+		decl = n
+	default:
+		snap.ErrorAt(old.Obj.Pos(), "unknown declaration type %T", n)
+	}
 
 	// Make sure target file has the necessary imports.
 	refactor.InspectAST(decl, func(stack []ast.Node) {
-		/*
-			if id, ok := stack[0].(*ast.Ident); ok {
-				if p, ok := snap.Target().Pkg.TypesInfo.Uses[id].(*types.PkgName); ok {
-					snap.NeedImport(dst, p.Id(), p.Pkg().Path())
-				}
+		if id, ok := stack[0].(*ast.Ident); ok {
+			if p, ok := snap.Target().TypesInfo.Uses[id].(*types.PkgName); ok {
+				println("ID", p.Id())
+				snap.NeedImport(dst, p.Id(), p.Imported().Path())
 			}
-		*/
+		}
 	})
 
 	// Move code.
 	text := snap.Text(decl.Pos(), decl.End())
 	snap.Edit(decl.Pos(), decl.End(), "")
 	snap.Edit(dst, dst, "\n"+string(text))
+
+	// TODO: Delete unused imports at some point.
+}
+
+func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.Package) {
+	// Find target package.
+	dst := targetPkg.Syntax[0].End()
+	if dst == token.NoPos {
+		snap.ErrorAt(token.NoPos, "cannot find pkg")
+		return
+	}
+
+	stack := snap.FindAST(old.Obj.Pos())
+	var decl ast.Node
+	switch n := stack[2].(type) {
+	case *ast.GenDecl:
+		decl = n
+	case *ast.FuncDecl:
+		decl = n
+	default:
+		snap.ErrorAt(old.Obj.Pos(), "unknown declaration type %T", n)
+	}
+
+	// Make sure target package has the necessary imports.
+	// Remove references to the target package itself.
+	// Insert references to the original package as needed.
+	// TODO: Something about import cycles.
+	text := snap.Text(decl.Pos(), decl.End())
+	buf := edit.NewBuffer(text)
+	pkg := snap.Target().Types
+	refactor.InspectAST(decl, func(stack []ast.Node) {
+		if id, ok := stack[0].(*ast.Ident); ok {
+			obj := snap.Target().TypesInfo.Uses[id]
+			if pn, ok := obj.(*types.PkgName); ok {
+				if pn.Imported().Path() == targetPkg.Types.Path() {
+					sel := stack[1].(*ast.SelectorExpr)
+					buf.Replace(int(sel.Pos()-decl.Pos()), int(sel.Sel.Pos()-decl.Pos()), "")
+				} else {
+					snap.NeedImport(dst, pn.Id(), pn.Imported().Path())
+				}
+			} else if obj != nil && obj.Parent() == pkg.Scope() {
+				off := int(id.Pos() - decl.Pos())
+				snap.NeedImport(dst, pkg.Name(), pkg.Path())
+				buf.Replace(off, off, pkg.Name()+".")
+			}
+		}
+	})
+
+	// Move code.
+	snap.Edit(decl.Pos(), decl.End(), "")
+	snap.Edit(dst, dst, "\n"+buf.String())
 
 	// TODO: Delete unused imports at some point.
 }

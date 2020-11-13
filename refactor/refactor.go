@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -176,6 +177,7 @@ type Snapshot struct {
 	files  fileCache
 	pkgs   []*packages.Package
 	edits  map[string]*edit.Buffer
+	added  map[string][]string
 	errors int
 }
 
@@ -240,6 +242,7 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		r:     r,
 		fset:  token.NewFileSet(),
 		edits: make(map[string]*edit.Buffer),
+		added: make(map[string][]string),
 	}
 	if base != nil {
 		for name, edit := range base.edits {
@@ -636,26 +639,59 @@ func InspectAST(n ast.Node, f func(stack []ast.Node)) {
 	}
 }
 
-func (s *Snapshot) FindAST(pos token.Pos) []ast.Node {
+func (s *Snapshot) findFile(pos token.Pos) (*packages.Package, *ast.File) {
 	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
-			if pos < file.Pos() || file.End() <= pos {
-				continue
+			if file.Pos() <= pos && pos <= file.End() {
+				return p, file
 			}
-
-			var stack []ast.Node
-			ast.Inspect(file, func(n ast.Node) bool {
-				if n == nil || pos < n.Pos() || n.End() <= pos {
-					return false
-				}
-				stack = append(stack, n)
-				return true
-			})
-			for i, j := 0, len(stack)-1; i < j; i, j = i+1, j-1 {
-				stack[i], stack[j] = stack[j], stack[i]
-			}
-			return stack
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+func (s *Snapshot) FindAST(pos token.Pos) []ast.Node {
+	_, file := s.findFile(pos)
+	if file == nil {
+		return nil
+	}
+
+	var stack []ast.Node
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil || pos < n.Pos() || n.End() <= pos {
+			return false
+		}
+		stack = append(stack, n)
+		return true
+	})
+	for i, j := 0, len(stack)-1; i < j; i, j = i+1, j-1 {
+		stack[i], stack[j] = stack[j], stack[i]
+	}
+	return stack
+}
+
+func (s *Snapshot) NeedImport(pos token.Pos, id, path string) {
+	_, file := s.findFile(pos)
+	if file == nil {
+		fmt.Println(s.Position(pos))
+		panic("no file")
+	}
+
+	for _, imp := range file.Imports {
+		u, err := strconv.Unquote(imp.Path.Value)
+		if err == nil && u == path {
+			// TODO check identifier
+			return
+		}
+	}
+
+	name := s.Position(file.Package).Filename
+	added := s.added[name]
+	for _, p := range added {
+		if path == p {
+			return
+		}
+	}
+	s.added[name] = append(s.added[name], path)
+	s.Edit(file.Name.End(), file.Name.End(), "\nimport \""+path+"\"")
 }
