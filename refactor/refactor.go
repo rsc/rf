@@ -174,7 +174,7 @@ type Snapshot struct {
 	r      *Refactor
 	fset   *token.FileSet
 	files  fileCache
-	pkgs   []*Package
+	pkgs   []*packages.Package
 	edits  map[string]*edit.Buffer
 	errors int
 }
@@ -191,17 +191,12 @@ func (s *Snapshot) NumErrors() int {
 	return s.errors
 }
 
-func (s *Snapshot) Target() *Package {
+func (s *Snapshot) Target() *packages.Package {
 	return s.pkgs[0]
 }
 
-func (s *Snapshot) Packages() []*Package {
+func (s *Snapshot) Packages() []*packages.Package {
 	return s.pkgs
-}
-
-type Package struct {
-	g   *Snapshot
-	Pkg *packages.Package
 }
 
 type fileCache struct {
@@ -279,50 +274,40 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		return nil, fmt.Errorf("syntax or type errors found")
 	}
 
-	rpkgs := []*Package{nil, nil}
-	var self, selfTest *Package
+	var self, selfTest *packages.Package
 	for _, p := range pkgs {
 		if strings.HasSuffix(p.ID, ".test") {
 			continue
 		}
-		rp := &Package{Pkg: p, g: g}
 		if p.PkgPath == r.self.PkgPath {
 			if p.ID == p.PkgPath {
 				// Actual package
 				if self != nil {
 					return nil, fmt.Errorf("duplicate results for target")
 				}
-				self = rp
+				self = p
 				continue
 			} else {
 				// Package built with tests.
 				if selfTest != nil {
 					return nil, fmt.Errorf("duplicate results for target test")
 				}
-				selfTest = rp
+				selfTest = p
 				continue
 			}
 		}
-		rpkgs = append(rpkgs, rp)
+		g.pkgs = append(g.pkgs, p)
 	}
 	if selfTest != nil && self != nil {
-		rpkgs[0] = selfTest
-		rpkgs[1] = self
+		g.pkgs = append([]*packages.Package{selfTest, self}, g.pkgs...)
 	} else if selfTest != nil {
-		rpkgs[1] = selfTest
-		rpkgs = rpkgs[1:]
+		g.pkgs = append([]*packages.Package{selfTest}, g.pkgs...)
 	} else if self != nil {
-		rpkgs[1] = self
-		rpkgs = rpkgs[1:]
+		g.pkgs = append([]*packages.Package{self}, g.pkgs...)
 	} else {
 		return nil, fmt.Errorf("did not find target")
 	}
-	g.pkgs = append(g.pkgs, rpkgs...)
 	return g, nil
-}
-
-func (p *Package) File(pos token.Pos) string {
-	return p.g.fset.Position(pos).Filename
 }
 
 // shortPath returns an absolute or relative name for path, whatever is shorter.
@@ -339,18 +324,10 @@ func (s *Snapshot) Addr(pos token.Pos) string {
 	return p.String()
 }
 
-func (p *Package) Position(pos token.Pos) token.Position {
-	return p.g.fset.Position(pos)
-}
-
-func (p *Package) Fset() *token.FileSet {
-	return p.g.fset
-}
-
-func (p *Package) Text(lo, hi token.Pos) []byte {
-	plo := p.Position(lo)
-	phi := p.Position(hi)
-	text := p.g.files.cacheRead(plo.Filename, nil)
+func (s *Snapshot) Text(lo, hi token.Pos) []byte {
+	plo := s.Position(lo)
+	phi := s.Position(hi)
+	text := s.files.cacheRead(plo.Filename, nil)
 	if text == nil {
 		return nil
 	}
@@ -371,10 +348,10 @@ func (s *Snapshot) Edit(lo, hi token.Pos, repl string) {
 	s.edits[file].Replace(plo.Offset, phi.Offset, repl)
 }
 
-func (s *Snapshot) ForEachFile(f func(pkg *Package, file *ast.File)) {
+func (s *Snapshot) ForEachFile(f func(pkg *packages.Package, file *ast.File)) {
 	seen := make(map[string]bool)
 	for _, p := range s.pkgs {
-		for _, file := range p.Pkg.Syntax {
+		for _, file := range p.Syntax {
 			filename := s.Position(file.Package).Filename
 			if seen[filename] {
 				continue
@@ -385,42 +362,26 @@ func (s *Snapshot) ForEachFile(f func(pkg *Package, file *ast.File)) {
 	}
 }
 
-func (p *Package) Edit(file string) *edit.Buffer {
-	if p.g.edits[file] == nil {
-		text := p.g.files.cacheRead(file, nil)
-		if text != nil {
-			p.g.edits[file] = edit.NewBuffer(text)
-		}
-	}
-	return p.g.edits[file]
+func (s *Snapshot) File(pos token.Pos) string {
+	return s.fset.Position(pos).Filename
 }
 
 func (s *Snapshot) Diff() ([]byte, error) {
 	var diffs []byte
 	for _, p := range s.pkgs {
-		d, err := p.Diff()
-		if err != nil {
-			return nil, err
+		for _, file := range p.Syntax {
+			name := s.File(file.Package)
+			buf, ok := s.edits[name]
+			if !ok {
+				continue
+			}
+			rel, err := filepath.Rel(s.r.modRoot, name)
+			d, err := diff.Diff("old/"+rel, s.files.cacheRead(name, nil), "new/"+rel, buf.Bytes())
+			if err != nil {
+				return nil, err
+			}
+			diffs = append(diffs, d...)
 		}
-		diffs = append(diffs, d...)
-	}
-	return diffs, nil
-}
-
-func (p *Package) Diff() ([]byte, error) {
-	var diffs []byte
-	for _, file := range p.Pkg.Syntax {
-		name := p.File(file.Package)
-		buf, ok := p.g.edits[name]
-		if !ok {
-			continue
-		}
-		rel, err := filepath.Rel(p.g.r.modRoot, name)
-		d, err := diff.Diff("old/"+rel, p.g.files.cacheRead(name, nil), "new/"+rel, buf.Bytes())
-		if err != nil {
-			return nil, err
-		}
-		diffs = append(diffs, d...)
 	}
 	return diffs, nil
 }
@@ -429,13 +390,13 @@ func (s *Snapshot) Modified() []string {
 	seen := make(map[string]bool)
 	var paths []string
 	for _, p := range s.pkgs {
-		path := strings.TrimSuffix(p.Pkg.PkgPath, "_test")
+		path := strings.TrimSuffix(p.PkgPath, "_test")
 		if seen[path] {
 			continue
 		}
-		for _, file := range p.Pkg.Syntax {
-			name := p.File(file.Package)
-			if _, ok := p.g.edits[name]; ok {
+		for _, file := range p.Syntax {
+			name := s.File(file.Package)
+			if _, ok := s.edits[name]; ok {
 				seen[path] = true
 				paths = append(paths, path)
 				break
@@ -447,15 +408,15 @@ func (s *Snapshot) Modified() []string {
 
 func (s *Snapshot) Gofmt() {
 	for _, p := range s.pkgs {
-		for _, file := range p.Pkg.Syntax {
-			name := p.File(file.Package)
-			buf, ok := p.g.edits[name]
+		for _, file := range p.Syntax {
+			name := s.File(file.Package)
+			buf, ok := s.edits[name]
 			if !ok {
 				continue
 			}
 			text, err := format.Source(buf.Bytes())
 			if err == nil {
-				p.g.edits[name] = edit.NewBuffer(text)
+				s.edits[name] = edit.NewBuffer(text)
 			}
 		}
 	}
@@ -464,9 +425,9 @@ func (s *Snapshot) Gofmt() {
 func (s *Snapshot) Write(stderr io.Writer) error {
 	failed := false
 	for _, p := range s.pkgs {
-		for _, file := range p.Pkg.Syntax {
-			name := p.File(file.Package)
-			buf, ok := p.g.edits[name]
+		for _, file := range p.Syntax {
+			name := s.File(file.Package)
+			buf, ok := s.edits[name]
 			if !ok {
 				continue
 			}
@@ -484,9 +445,9 @@ func (s *Snapshot) Write(stderr io.Writer) error {
 
 func (s *Snapshot) LookupAt(name string, pos token.Pos) types.Object {
 	for _, p := range s.pkgs {
-		for _, file := range p.Pkg.Syntax {
+		for _, file := range p.Syntax {
 			if file.Pos() <= pos && pos < file.End() {
-				_, obj := p.Pkg.TypesInfo.Scopes[file].Innermost(pos).LookupParent(name, pos)
+				_, obj := p.TypesInfo.Scopes[file].Innermost(pos).LookupParent(name, pos)
 				return obj
 			}
 		}
@@ -544,7 +505,7 @@ func (k ItemKind) String() string {
 	return "???"
 }
 
-func (p *Package) Lookup(expr string) *Item {
+func (s *Snapshot) Lookup(expr string) *Item {
 	// Special cases for directory, file, as in "mv Thing ../newpkg".
 	if strings.Contains(expr, "/") {
 		return &Item{Kind: ItemDir, Name: expr}
@@ -554,14 +515,14 @@ func (p *Package) Lookup(expr string) *Item {
 	}
 
 	name, rest, more := cut(expr, ".")
-	item := lookupTop(p, name)
+	item := lookupTop(s.pkgs[0], name)
 	if item == nil {
 		return nil
 	}
 	item.Name = name
 	for more {
 		name, rest, more = cut(rest, ".")
-		item = lookupIn(p, item, name)
+		item = lookupIn(s.pkgs[0], item, name)
 		if item == nil {
 			return nil
 		}
@@ -570,8 +531,8 @@ func (p *Package) Lookup(expr string) *Item {
 	return item
 }
 
-func lookupTop(p *Package, expr string) *Item {
-	obj := p.Pkg.Types.Scope().Lookup(expr)
+func lookupTop(p *packages.Package, expr string) *Item {
+	obj := p.Types.Scope().Lookup(expr)
 	switch obj := obj.(type) {
 	default:
 		log.Fatalf("%s is a %T, unimplemented", expr, obj)
@@ -589,7 +550,7 @@ func lookupTop(p *Package, expr string) *Item {
 	}
 }
 
-func lookupIn(p *Package, outer *Item, name string) *Item {
+func lookupIn(p *packages.Package, outer *Item, name string) *Item {
 	switch outer.Kind {
 	case ItemConst:
 		return nil
@@ -610,7 +571,7 @@ func lookupIn(p *Package, outer *Item, name string) *Item {
 	return nil
 }
 
-func lookupType(p *Package, outer *Item, typ types.Type, name string) *Item {
+func lookupType(p *packages.Package, outer *Item, typ types.Type, name string) *Item {
 	if tn, ok := typ.(*types.Named); ok {
 		n := tn.NumMethods()
 		for i := 0; i < n; i++ {
@@ -677,7 +638,7 @@ func InspectAST(n ast.Node, f func(stack []ast.Node)) {
 
 func (s *Snapshot) FindAST(pos token.Pos) []ast.Node {
 	for _, p := range s.pkgs {
-		for _, file := range p.Pkg.Syntax {
+		for _, file := range p.Syntax {
 			if pos < file.Pos() || file.End() <= pos {
 				continue
 			}

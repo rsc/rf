@@ -9,37 +9,39 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"reflect"
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
-type posChecker func(span *refactor.Snapshot, stack []ast.Node)
+type posChecker func(snap *refactor.Snapshot, stack []ast.Node)
 
 func notInScope(name string) posChecker {
-	return func(span *refactor.Snapshot, stack []ast.Node) {
+	return func(snap *refactor.Snapshot, stack []ast.Node) {
 		if _, ok := stack[1].(*ast.SelectorExpr); ok {
 			// Rewriting after a dot, so scope is not a concern.
 			return
 		}
 		pos := stack[0].Pos()
-		if span.LookupAt(name, pos) != nil {
-			span.ErrorAt(pos, "%s already in scope", name)
+		if snap.LookupAt(name, pos) != nil {
+			snap.ErrorAt(pos, "%s already in scope", name)
 		}
 	}
 }
 
 func inScope(name string, obj types.Object) posChecker {
-	return func(span *refactor.Snapshot, stack []ast.Node) {
+	return func(snap *refactor.Snapshot, stack []ast.Node) {
 		if _, ok := stack[1].(*ast.SelectorExpr); ok {
 			// Rewriting after a dot, so scope is not a concern.
 			return
 		}
 		pos := stack[0].Pos()
-		if span.LookupAt(name, pos) != obj {
-			span.ErrorAt(pos, "%s is shadowed", name)
+		if snap.LookupAt(name, pos) != obj {
+			snap.ErrorAt(pos, "%s is shadowed", name)
 		}
 	}
 }
@@ -51,7 +53,7 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 
 	var items []*refactor.Item
 	for _, arg := range args {
-		items = append(items, snap.Target().Lookup(arg))
+		items = append(items, snap.Lookup(arg))
 	}
 	for i, item := range items[:len(items)-1] {
 		if item == nil {
@@ -73,7 +75,10 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 			return nil, false, fmt.Errorf("cannot move %s to directory %s", item.Kind, dst.Name)
 		}
 
-		// TODO implement
+		if len(srcs) == 1 && srcs[0].Kind == refactor.ItemVar && dst.Kind == refactor.ItemFile {
+			mvCode(snap, srcs[0], dst.Name)
+			return nil, false, nil
+		}
 	}
 
 	// Otherwise, renaming to program identifier, which must not exist.
@@ -90,7 +95,7 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 	var newOuter *refactor.Item
 	newPrefix, newName, ok := cutLast(newPath, ".")
 	if ok {
-		newOuter = snap.Target().Lookup(newPrefix)
+		newOuter = snap.Lookup(newPrefix)
 		if newOuter == nil {
 			return nil, false, fmt.Errorf("cannot find %s", newPrefix)
 		}
@@ -173,8 +178,8 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 	return nil, false, fmt.Errorf("unimplemented replacement: %v -> %v . %v", old, newOuter, newName)
 }
 
-func rewriteDefn(span *refactor.Snapshot, old *refactor.Item, new string) {
-	stack := span.FindAST(old.Obj.Pos())
+func rewriteDefn(snap *refactor.Snapshot, old *refactor.Item, new string) {
+	stack := snap.FindAST(old.Obj.Pos())
 	// For a function declaration, the FuncType ends up spuriously on the stack.
 	// (It is considered to start at the func keyword and end after the results,
 	// so it sits both before and after the Ident, and it is walked after the Ident.)
@@ -187,23 +192,23 @@ func rewriteDefn(span *refactor.Snapshot, old *refactor.Item, new string) {
 		for _, n := range stack {
 			types = append(types, fmt.Sprintf("%T", n))
 		}
-		span.ErrorAt(old.Obj.Pos(), "did not find definition - %v", types)
+		snap.ErrorAt(old.Obj.Pos(), "did not find definition - %v", types)
 		return
 	}
-	span.Edit(id.Pos(), id.End(), new)
+	snap.Edit(id.Pos(), id.End(), new)
 }
 
-func rewriteUses(span *refactor.Snapshot, old *refactor.Item, new string, checkPos posChecker) {
-	span.ForEachFile(func(pkg *refactor.Package, file *ast.File) {
+func rewriteUses(snap *refactor.Snapshot, old *refactor.Item, new string, checkPos posChecker) {
+	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
 		refactor.InspectAST(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
-			if !ok || pkg.Pkg.TypesInfo.Uses[id] != old.Obj {
+			if !ok || pkg.TypesInfo.Uses[id] != old.Obj {
 				return
 			}
 			if checkPos != nil {
-				checkPos(span, stack)
+				checkPos(snap, stack)
 			}
-			span.Edit(id.Pos(), id.End(), new)
+			snap.Edit(id.Pos(), id.End(), new)
 		})
 	})
 }
@@ -217,8 +222,8 @@ func StackTypes(list []ast.Node) string {
 }
 
 // TODO: Return doc comments.
-func removeDecl(span *refactor.Snapshot, old *refactor.Item) {
-	stack := span.FindAST(old.Obj.Pos())
+func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
+	stack := snap.FindAST(old.Obj.Pos())
 	// stack is *ast.Ident *ast.ValueSpec *ast.GenDecl
 	spec := stack[1].(*ast.ValueSpec)
 	decl := stack[2].(*ast.GenDecl)
@@ -227,32 +232,32 @@ func removeDecl(span *refactor.Snapshot, old *refactor.Item) {
 		// Delete entire declaration.
 		// TODO: Doc comments too.
 		// TODO: Newline too.
-		span.Edit(decl.Pos(), decl.End(), "")
+		snap.Edit(decl.Pos(), decl.End(), "")
 		return
 	}
 
 	if len(spec.Names) == 1 {
-		span.Edit(spec.Pos(), spec.End(), "")
+		snap.Edit(spec.Pos(), spec.End(), "")
 		return
 	}
 
 	for i, id := range spec.Names {
 		if id.Pos() == old.Obj.Pos() {
 			if i == 0 {
-				span.Edit(id.Pos(), spec.Names[i+1].Pos(), "")
+				snap.Edit(id.Pos(), spec.Names[i+1].Pos(), "")
 			} else {
-				span.Edit(spec.Names[i-1].End(), id.End(), "")
+				snap.Edit(spec.Names[i-1].End(), id.End(), "")
 			}
 			// TODO: Deal with initializer spec.Values[i]
 			return
 		}
 	}
 
-	span.ErrorAt(old.Obj.Pos(), "could not find declaration to delete")
+	snap.ErrorAt(old.Obj.Pos(), "could not find declaration to delete")
 }
 
-func addStructField(span *refactor.Snapshot, structPos token.Pos, name string, typ types.Type) {
-	stack := span.FindAST(structPos)
+func addStructField(snap *refactor.Snapshot, structPos token.Pos, name string, typ types.Type) {
+	stack := snap.FindAST(structPos)
 
 	var xtyp ast.Expr
 Loop:
@@ -272,7 +277,7 @@ Loop:
 
 	styp, ok := xtyp.(*ast.StructType)
 	if !ok {
-		span.ErrorAt(structPos, "cannot find struct to update")
+		snap.ErrorAt(structPos, "cannot find struct to update")
 		return
 	}
 	fields := styp.Fields
@@ -280,28 +285,28 @@ Loop:
 	// Insert field at end of struct.
 	// If closing } is not on a line by itself, move it to one.
 	line := func(pos token.Pos) int {
-		return span.Position(pos).Line
+		return snap.Position(pos).Line
 	}
 	if line(fields.Opening) == line(fields.Closing) ||
 		len(fields.List) > 0 && line(fields.List[len(fields.List)-1].End()) == line(fields.Closing) {
-		span.Edit(fields.Closing, fields.Closing, "\n")
+		snap.Edit(fields.Closing, fields.Closing, "\n")
 	}
-	span.Edit(fields.Closing, fields.Closing, name+" "+typ.String()+"\n")
+	snap.Edit(fields.Closing, fields.Closing, name+" "+typ.String()+"\n")
 }
 
-func methodToFunc(span *refactor.Snapshot, method *types.Func, name string) {
+func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 	// Convert method declaration.
 	// Insert name before receiver list.
-	stack := span.FindAST(method.Pos()) // FuncType Ident FuncDecl
+	stack := snap.FindAST(method.Pos()) // FuncType Ident FuncDecl
 	decl := stack[2].(*ast.FuncDecl)
-	span.Edit(decl.Recv.Opening, decl.Recv.Opening, " "+name)
+	snap.Edit(decl.Recv.Opening, decl.Recv.Opening, " "+name)
 
 	// Drop ) MethodName( from declaration, replacing with comma if there are arguments.
 	sep := ""
 	if len(decl.Type.Params.List) > 0 {
 		sep = ", "
 	}
-	span.Edit(decl.Recv.Closing, decl.Type.Params.Opening+1, sep)
+	snap.Edit(decl.Recv.Closing, decl.Type.Params.Opening+1, sep)
 
 	// TODO: Need to add names to receiver or params if some were named and others not.
 
@@ -311,26 +316,26 @@ func methodToFunc(span *refactor.Snapshot, method *types.Func, name string) {
 	recvType := sig.Recv().Type()
 	_, recvPtr := recvType.(*types.Pointer)
 
-	span.ForEachFile(func(pkg *refactor.Package, file *ast.File) {
+	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
 		refactor.InspectAST(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
-			if !ok || pkg.Pkg.TypesInfo.Uses[id] != method {
+			if !ok || pkg.TypesInfo.Uses[id] != method {
 				return
 			}
 
 			// Found a use to convert. Can we refer to the new name here?
 			// TODO: Add import
-			if span.LookupAt(name, id.Pos()) != nil {
-				span.ErrorAt(id.Pos(), "%s already in scope", name)
+			if snap.LookupAt(name, id.Pos()) != nil {
+				snap.ErrorAt(id.Pos(), "%s already in scope", name)
 			}
 
 			// But what kind of use?
 			// Determine selector type, whether it's a type or value (T.M vs x.M),
 			// and whether it's being called.
 			sel := stack[1].(*ast.SelectorExpr)
-			tv, ok := pkg.Pkg.TypesInfo.Types[sel.X]
+			tv, ok := pkg.TypesInfo.Types[sel.X]
 			if !ok {
-				span.ErrorAt(sel.Pos(), "lost type information")
+				snap.ErrorAt(sel.Pos(), "lost type information")
 				return
 			}
 			selType := tv.IsType()
@@ -341,24 +346,24 @@ func methodToFunc(span *refactor.Snapshot, method *types.Func, name string) {
 			if call == nil {
 				// Method value.
 				if !selType { // x.M
-					span.ErrorAt(id.Pos(), "cannot rewrite method value to function")
+					snap.ErrorAt(id.Pos(), "cannot rewrite method value to function")
 					return
 				}
 				if selPtr && !recvPtr { // (*T).F but F is a value method - valid Go but too hard to convert
-					span.ErrorAt(id.Pos(), "cannot rewrite pointer method value (with value receiver method) to function")
+					snap.ErrorAt(id.Pos(), "cannot rewrite pointer method value (with value receiver method) to function")
 					return
 				}
-				span.Edit(sel.Pos(), sel.End(), name)
+				snap.Edit(sel.Pos(), sel.End(), name)
 				return
 			}
 
 			// Call of method expression?
 			if selType {
 				// T.M(rcvr, x) -> newname(rcvr, x).
-				span.Edit(call.Pos(), call.Lparen, name)
+				snap.Edit(call.Pos(), call.Lparen, name)
 				if selPtr && !recvPtr { // (*T).M(rcvr, x) -> newname(*rcvr, x)
 					// TODO parens
-					span.Edit(call.Lparen+1, call.Lparen+1, "*")
+					snap.Edit(call.Lparen+1, call.Lparen+1, "*")
 				}
 				return
 			}
@@ -366,17 +371,54 @@ func methodToFunc(span *refactor.Snapshot, method *types.Func, name string) {
 			// Call of method with real receiver.
 			// Turn x.M(y) into name(x, y).
 			// May need to turn x into &x or *x as well.
-			span.Edit(sel.X.Pos(), sel.X.Pos(), name+"(")
-			span.Edit(sel.X.End(), call.Lparen+1, "")
+			snap.Edit(sel.X.Pos(), sel.X.Pos(), name+"(")
+			snap.Edit(sel.X.End(), call.Lparen+1, "")
 			if len(call.Args) > 0 {
-				span.Edit(call.Lparen+1, call.Lparen+1, ", ")
+				snap.Edit(call.Lparen+1, call.Lparen+1, ", ")
 			}
 			if recvPtr && !selPtr {
-				span.Edit(sel.X.Pos(), sel.X.Pos(), "&")
+				snap.Edit(sel.X.Pos(), sel.X.Pos(), "&")
 			}
 			if selPtr && !recvPtr {
-				span.Edit(sel.X.Pos(), sel.X.Pos(), "*")
+				snap.Edit(sel.X.Pos(), sel.X.Pos(), "*")
 			}
 		})
 	})
+}
+
+func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
+	// Find target file.
+	var dst token.Pos
+	for _, file := range snap.Target().Syntax {
+		p := snap.Position(file.Package)
+		if filepath.Base(p.Filename) == targetFile {
+			dst = file.End()
+			break
+		}
+	}
+	if dst == token.NoPos {
+		snap.ErrorAt(token.NoPos, "cannot find file")
+		return
+	}
+
+	stack := snap.FindAST(old.Obj.Pos())
+	decl := stack[2].(*ast.GenDecl)
+
+	// Make sure target file has the necessary imports.
+	refactor.InspectAST(decl, func(stack []ast.Node) {
+		/*
+			if id, ok := stack[0].(*ast.Ident); ok {
+				if p, ok := snap.Target().Pkg.TypesInfo.Uses[id].(*types.PkgName); ok {
+					snap.NeedImport(dst, p.Id(), p.Pkg().Path())
+				}
+			}
+		*/
+	})
+
+	// Move code.
+	text := snap.Text(decl.Pos(), decl.End())
+	snap.Edit(decl.Pos(), decl.End(), "")
+	snap.Edit(dst, dst, "\n"+string(text))
+
+	// TODO: Delete unused imports at some point.
 }
