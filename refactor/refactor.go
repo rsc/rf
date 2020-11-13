@@ -29,7 +29,7 @@ import (
 type Refactor struct {
 	dir     string
 	self    *packages.Package
-	g       *packageGroup
+	g       *Snapshot
 	modRoot string
 	modPath string
 }
@@ -162,7 +162,9 @@ func (r *Refactor) Importers() ([]string, error) {
 	return paths, nil
 }
 
-type packageGroup struct {
+// A Snapshot is a collection of loaded packages
+// and pending edits.
+type Snapshot struct {
 	r     *Refactor
 	fset  *token.FileSet
 	files fileCache
@@ -171,8 +173,12 @@ type packageGroup struct {
 	edits map[string]*edit.Buffer
 }
 
+func (s *Snapshot) Packages() []*Package {
+	return s.pkgs
+}
+
 type Package struct {
-	g   *packageGroup
+	g   *Snapshot
 	Pkg *packages.Package
 }
 
@@ -200,16 +206,16 @@ func (fc *fileCache) ParseFile(fset *token.FileSet, filename string, src []byte)
 	return parser.ParseFile(fset, filename, fc.cacheRead(filename, src), mode)
 }
 
-func (r *Refactor) Load(extra ...string) ([]*Package, error) {
+func (r *Refactor) Load(extra ...string) (*Snapshot, error) {
 	return r.load(0, extra)
 }
 
-func (r *Refactor) LoadTyped(extra ...string) ([]*Package, error) {
+func (r *Refactor) LoadTyped(extra ...string) (*Snapshot, error) {
 	return r.load(packages.NeedTypes|packages.NeedTypesInfo, extra)
 }
 
-func (r *Refactor) load(mode packages.LoadMode, extra []string) ([]*Package, error) {
-	g := &packageGroup{
+func (r *Refactor) load(mode packages.LoadMode, extra []string) (*Snapshot, error) {
+	g := &Snapshot{
 		r:     r,
 		fset:  token.NewFileSet(),
 		edits: make(map[string]*edit.Buffer),
@@ -273,7 +279,7 @@ func (r *Refactor) load(mode packages.LoadMode, extra []string) ([]*Package, err
 		r.g.stale = true
 	}
 	r.g = g
-	return rpkgs, nil
+	return g, nil
 }
 
 func (p *Package) File(pos token.Pos) string {
@@ -322,9 +328,9 @@ func (p *Package) Edit(file string) *edit.Buffer {
 	return p.g.edits[file]
 }
 
-func (r *Refactor) Diff() ([]byte, error) {
+func (s *Snapshot) Diff() ([]byte, error) {
 	var diffs []byte
-	for _, p := range r.g.pkgs {
+	for _, p := range s.pkgs {
 		d, err := p.Diff()
 		if err != nil {
 			return nil, err
@@ -352,10 +358,10 @@ func (p *Package) Diff() ([]byte, error) {
 	return diffs, nil
 }
 
-func (r *Refactor) Modified() []string {
+func (s *Snapshot) Modified() []string {
 	seen := make(map[string]bool)
 	var paths []string
-	for _, p := range r.g.pkgs {
+	for _, p := range s.pkgs {
 		path := strings.TrimSuffix(p.Pkg.PkgPath, "_test")
 		if seen[path] {
 			continue
@@ -372,8 +378,8 @@ func (r *Refactor) Modified() []string {
 	return paths
 }
 
-func (r *Refactor) Gofmt() {
-	for _, p := range r.g.pkgs {
+func (s *Snapshot) Gofmt() {
+	for _, p := range s.pkgs {
 		for _, file := range p.Pkg.Syntax {
 			name := p.File(file.Package)
 			buf, ok := p.g.edits[name]
@@ -388,9 +394,9 @@ func (r *Refactor) Gofmt() {
 	}
 }
 
-func (r *Refactor) Write(stderr io.Writer) error {
+func (s *Snapshot) Write(stderr io.Writer) error {
 	failed := false
-	for _, p := range r.g.pkgs {
+	for _, p := range s.pkgs {
 		for _, file := range p.Pkg.Syntax {
 			name := p.File(file.Package)
 			buf, ok := p.g.edits[name]
@@ -419,9 +425,9 @@ func (p *Package) LookupAt(name string, pos token.Pos) types.Object {
 	return nil
 }
 
-func PrintErrors(w io.Writer, pkgs []*Package) bool {
+func PrintErrors(w io.Writer, snap *Snapshot) bool {
 	found := false
-	for _, p := range pkgs {
+	for _, p := range snap.Packages() {
 		if len(p.Pkg.Errors) > 0 {
 			for _, e := range p.Pkg.Errors {
 				if file, rest, ok := cut(e.Pos, ":"); ok {
@@ -518,7 +524,7 @@ func lookupIn(p *Package, outer *Item, name string) *Item {
 		return lookupType(p, outer, outer.Obj.Type(), name)
 	case ItemVar:
 		// If unnamed struct or interface, look in type.
-		switch typ := outer.Obj.Type().(type) {
+		switch typ := outer.Obj.Type().Underlying().(type) {
 		case *types.Struct, *types.Interface:
 			return lookupType(p, outer, typ, name)
 		}

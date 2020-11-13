@@ -56,13 +56,14 @@ func run(dir, pkg string, showDiff bool, stdout, stderr io.Writer, args []string
 		return err
 	}
 
-	pkgs, err := rf.LoadTyped()
+	snap, err := rf.LoadTyped()
 	if err != nil {
 		return err
 	}
-	if refactor.PrintErrors(stderr, pkgs) {
+	if refactor.PrintErrors(stderr, snap) {
 		return fmt.Errorf("errors loading packages")
 	}
+	pkgs := snap.Packages()
 
 	rewrite, needImporters, err := cmd(pkgs[0], args[1:])
 	if err != nil {
@@ -75,13 +76,14 @@ func run(dir, pkg string, showDiff bool, stdout, stderr io.Writer, args []string
 			return err
 		}
 
-		pkgs, err = rf.LoadTyped(importers...)
+		snap, err = rf.LoadTyped(importers...)
 		if err != nil {
 			return err
 		}
-		if refactor.PrintErrors(stderr, pkgs) {
+		if refactor.PrintErrors(stderr, snap) {
 			return fmt.Errorf("errors loading importer packages")
 		}
+		pkgs = snap.Packages()
 
 		var paths []string
 		for _, p := range pkgs {
@@ -103,31 +105,26 @@ func run(dir, pkg string, showDiff bool, stdout, stderr io.Writer, args []string
 		return fmt.Errorf("errors applying rewrite")
 	}
 
-	var d []byte
-	var derr error
-	rf.Gofmt()
+	snap.Gofmt()
 
-	if showDiff {
-		d, derr = rf.Diff()
-	}
-
-	pkgs, err = rf.LoadTyped(rf.Modified()...)
+	snap1, err := rf.LoadTyped(snap.Modified()...)
 	if err != nil {
 		return err
 	}
-	if refactor.PrintErrors(stderr, pkgs) {
+	if refactor.PrintErrors(stderr, snap1) {
 		return fmt.Errorf("errors reloading modified packages")
 	}
 
 	if showDiff {
-		if derr != nil {
-			return derr
+		d, err := snap.Diff()
+		if err != nil {
+			return err
 		}
 		stdout.Write(d)
 		return nil
 	}
 
-	return rf.Write(stderr)
+	return snap.Write(stderr)
 }
 
 var cmds = map[string]func(*refactor.Package, []string) (refactor.Rewriter, bool, error){
@@ -191,10 +188,19 @@ func cmdMv(p *refactor.Package, args []string) (rw refactor.Rewriter, needImport
 	newTop := topItem(newBase)
 	if oldBase == nil && oldItem.Kind == refactor.ItemVar &&
 		newBase != nil && newTop.Kind == refactor.ItemVar && (newBase.Kind == refactor.ItemVar || newBase.Kind == refactor.ItemField) {
-		if _, ok := newBase.Obj.(*types.Var).Type().(*types.Struct); ok {
+		if _, ok := newBase.Obj.(*types.Var).Type().Underlying().(*types.Struct); ok {
+			// Finding struct type is a little tricky.
+			var structPos token.Pos
+			tvar := newBase.Obj.(*types.Var)
+			switch typ := tvar.Type().(type) {
+			case *types.Struct:
+				structPos = tvar.Pos()
+			case *types.Named:
+				structPos = typ.Obj().Pos()
+			}
 			// Need to add struct field, and need to replace references.
 			rw := MultiRewriter(
-				&addStructField{target: newBase, name: newName, typ: oldItem.Obj.Type()},
+				&addStructField{structPos: structPos, name: newName, typ: oldItem.Obj.Type()},
 				&removeDecl{target: oldItem.Obj, reportInit: true},
 				&renameIdent{self: p, skipDefn: true, old: oldItem, lookup: newTop.Name, lookupOK: newTop.Obj, new: newPath},
 			)
@@ -339,13 +345,13 @@ func replace(pkg *refactor.Package, start, end token.Pos, repl string) {
 }
 
 type addStructField struct {
-	target *refactor.Item // var or field of struct type that needs new field
-	name   string
-	typ    types.Type
+	structPos token.Pos // var or field of struct type that needs new field
+	name      string
+	typ       types.Type
 }
 
 func (r *addStructField) Rewrite(pkg *refactor.Package, file *ast.File, ep refactor.ErrorPrinter) {
-	want := r.target.Obj.Pos()
+	want := r.structPos
 	if want < file.Pos() || file.End() <= want {
 		return
 	}
@@ -363,6 +369,13 @@ Loop:
 			typ = p.Type
 			break Loop
 		case *ast.ValueSpec:
+			if want >= p.Type.Pos() {
+				ep.ErrorAt(want, "internal error - lost track of where to insert struct field 2")
+				return
+			}
+			typ = p.Type
+			break Loop
+		case *ast.TypeSpec:
 			if want >= p.Type.Pos() {
 				ep.ErrorAt(want, "internal error - lost track of where to insert struct field 2")
 				return
