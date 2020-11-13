@@ -10,14 +10,15 @@ func (T) F(x int) int { return 1}
 var _ = T.F(1,2)
 var _ = T(1).F(2)
 var _ = T.F
-//var _ = (*T).F
 var _ = (*T).F(new(T), 2)
 var _ = new(T).F(2)
+
+//var _ = (*T).F
 -- stdout --
 diff old/x.go new/x.go
 --- old/x.go
 +++ new/x.go
-@@ -2,12 +2,13 @@
+@@ -2,13 +2,13 @@
 
  type T int
 
@@ -28,12 +29,12 @@ diff old/x.go new/x.go
 -var _ = T.F(1,2)
 -var _ = T(1).F(2)
 -var _ = T.F
+-var _ = (*T).F(new(T), 2)
+-var _ = new(T).F(2)
 +var _ = tf(1, 2)
 +var _ = tf(T(1), 2)
 +var _ = tf
-+
++var _ = tf(*new(T), 2)
++var _ = tf(*new(T), 2)
+
  //var _ = (*T).F
--var _ = (*T).F(new(T), 2)
--var _ = new(T).F(2)
-+var _ = tf(*new(T), 2)
-+var _ = tf(*new(T), 2)

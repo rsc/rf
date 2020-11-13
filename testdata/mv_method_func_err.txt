@@ -6,13 +6,7 @@ type T int
 
 func (T) F(x int) int { return 1}
 
-// uses
-var _ = T.F(1,2)
-var _ = T(1).F(2)
-var _ = T.F
 var _ = (*T).F
-var _ = (*T).F(new(T), 2)
-var _ = new(T).F(2)
 -- stderr --
-x.go:11:14: cannot use pointer method value with function using non-pointer receiver
-ERROR: errors applying rewrite
+x.go:7:14: cannot rewrite pointer method value (with value receiver method) to function
+ERROR: errors converting initial package

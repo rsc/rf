@@ -15,6 +15,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -27,9 +28,12 @@ import (
 
 // A Refactor holds the state for an active refactoring.
 type Refactor struct {
+	Stdout   io.Writer
+	Stderr   io.Writer
+	ShowDiff bool
+
 	dir     string
 	self    *packages.Package
-	g       *Snapshot
 	modRoot string
 	modPath string
 }
@@ -99,6 +103,8 @@ func New(dir, pkg string) (*Refactor, error) {
 		self:    pkgs[0],
 		modRoot: modRoot,
 		modPath: modPath,
+		Stdout:  os.Stdout,
+		Stderr:  os.Stderr,
 	}
 	return r, nil
 }
@@ -165,12 +171,28 @@ func (r *Refactor) Importers() ([]string, error) {
 // A Snapshot is a collection of loaded packages
 // and pending edits.
 type Snapshot struct {
-	r     *Refactor
-	fset  *token.FileSet
-	files fileCache
-	stale bool
-	pkgs  []*Package
-	edits map[string]*edit.Buffer
+	r      *Refactor
+	fset   *token.FileSet
+	files  fileCache
+	pkgs   []*Package
+	edits  map[string]*edit.Buffer
+	errors int
+}
+
+func (s *Snapshot) ErrorAt(pos token.Pos, format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	msg = strings.TrimRight(msg, "\n")
+	msg = strings.Replace(msg, "\n", "\n\t", -1)
+	fmt.Fprintf(s.r.Stderr, "%s: %s\n", s.Addr(pos), msg)
+	s.errors++
+}
+
+func (s *Snapshot) NumErrors() int {
+	return s.errors
+}
+
+func (s *Snapshot) Target() *Package {
+	return s.pkgs[0]
 }
 
 func (s *Snapshot) Packages() []*Package {
@@ -207,21 +229,25 @@ func (fc *fileCache) ParseFile(fset *token.FileSet, filename string, src []byte)
 }
 
 func (r *Refactor) Load(extra ...string) (*Snapshot, error) {
-	return r.load(0, extra)
+	return r.load(nil, 0, extra)
 }
 
 func (r *Refactor) LoadTyped(extra ...string) (*Snapshot, error) {
-	return r.load(packages.NeedTypes|packages.NeedTypesInfo, extra)
+	return r.load(nil, packages.NeedTypes|packages.NeedTypesInfo, extra)
 }
 
-func (r *Refactor) load(mode packages.LoadMode, extra []string) (*Snapshot, error) {
+func (s *Snapshot) Load(extra ...string) (*Snapshot, error) {
+	return s.r.load(s, packages.NeedTypes|packages.NeedTypesInfo, extra)
+}
+
+func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) (*Snapshot, error) {
 	g := &Snapshot{
 		r:     r,
 		fset:  token.NewFileSet(),
 		edits: make(map[string]*edit.Buffer),
 	}
-	if r.g != nil {
-		for name, edit := range r.g.edits {
+	if base != nil {
+		for name, edit := range base.edits {
 			g.files.cacheRead(name, edit.Bytes())
 		}
 	}
@@ -236,6 +262,23 @@ func (r *Refactor) load(mode packages.LoadMode, extra []string) (*Snapshot, erro
 	if err != nil {
 		return nil, err
 	}
+
+	failed := false
+	for _, p := range pkgs {
+		if len(p.Errors) > 0 {
+			failed = true
+			for _, e := range p.Errors {
+				if file, rest, ok := cut(e.Pos, ":"); ok {
+					e.Pos = r.shortPath(file) + ":" + rest
+				}
+				fmt.Fprintln(r.Stderr, e)
+			}
+		}
+	}
+	if failed {
+		return nil, fmt.Errorf("syntax or type errors found")
+	}
+
 	rpkgs := []*Package{nil, nil}
 	var self, selfTest *Package
 	for _, p := range pkgs {
@@ -275,10 +318,6 @@ func (r *Refactor) load(mode packages.LoadMode, extra []string) (*Snapshot, erro
 		return nil, fmt.Errorf("did not find target")
 	}
 	g.pkgs = append(g.pkgs, rpkgs...)
-	if r.g != nil {
-		r.g.stale = true
-	}
-	r.g = g
 	return g, nil
 }
 
@@ -294,10 +333,10 @@ func (r *Refactor) shortPath(path string) string {
 	return path
 }
 
-func (p *Package) Addr(pos token.Pos) string {
-	p1 := p.g.fset.Position(pos)
-	p1.Filename = p.g.r.shortPath(p1.Filename)
-	return p1.String()
+func (s *Snapshot) Addr(pos token.Pos) string {
+	p := s.fset.Position(pos)
+	p.Filename = s.r.shortPath(p.Filename)
+	return p.String()
 }
 
 func (p *Package) Position(pos token.Pos) token.Position {
@@ -316,6 +355,34 @@ func (p *Package) Text(lo, hi token.Pos) []byte {
 		return nil
 	}
 	return text[plo.Offset:phi.Offset]
+}
+
+func (s *Snapshot) Position(pos token.Pos) token.Position {
+	return s.fset.Position(pos)
+}
+
+func (s *Snapshot) Edit(lo, hi token.Pos, repl string) {
+	plo := s.Position(lo)
+	phi := s.Position(hi)
+	file := plo.Filename
+	if s.edits[file] == nil {
+		s.edits[file] = edit.NewBuffer(s.files.cacheRead(file, nil))
+	}
+	s.edits[file].Replace(plo.Offset, phi.Offset, repl)
+}
+
+func (s *Snapshot) ForEachFile(f func(pkg *Package, file *ast.File)) {
+	seen := make(map[string]bool)
+	for _, p := range s.pkgs {
+		for _, file := range p.Pkg.Syntax {
+			filename := s.Position(file.Package).Filename
+			if seen[filename] {
+				continue
+			}
+			seen[filename] = true
+			f(p, file)
+		}
+	}
 }
 
 func (p *Package) Edit(file string) *edit.Buffer {
@@ -415,30 +482,16 @@ func (s *Snapshot) Write(stderr io.Writer) error {
 	return nil
 }
 
-func (p *Package) LookupAt(name string, pos token.Pos) types.Object {
-	for _, file := range p.Pkg.Syntax {
-		if file.Pos() <= pos && pos < file.End() {
-			_, obj := p.Pkg.TypesInfo.Scopes[file].Innermost(pos).LookupParent(name, pos)
-			return obj
-		}
-	}
-	return nil
-}
-
-func PrintErrors(w io.Writer, snap *Snapshot) bool {
-	found := false
-	for _, p := range snap.Packages() {
-		if len(p.Pkg.Errors) > 0 {
-			for _, e := range p.Pkg.Errors {
-				if file, rest, ok := cut(e.Pos, ":"); ok {
-					e.Pos = p.g.r.shortPath(file) + ":" + rest
-				}
-				fmt.Fprintln(w, e)
-				found = true
+func (s *Snapshot) LookupAt(name string, pos token.Pos) types.Object {
+	for _, p := range s.pkgs {
+		for _, file := range p.Pkg.Syntax {
+			if file.Pos() <= pos && pos < file.End() {
+				_, obj := p.Pkg.TypesInfo.Scopes[file].Innermost(pos).LookupParent(name, pos)
+				return obj
 			}
 		}
 	}
-	return found
+	return nil
 }
 
 type Item struct {
@@ -446,6 +499,13 @@ type Item struct {
 	Name  string
 	Obj   types.Object
 	Outer *Item
+}
+
+func (i *Item) Outermost() *Item {
+	for i != nil && i.Outer != nil {
+		i = i.Outer
+	}
+	return i
 }
 
 type ItemKind int
@@ -588,63 +648,53 @@ func cutLast(s, sep string) (before, after string, ok bool) {
 	return s, "", false
 }
 
-type ErrorPrinter interface {
-	ErrorAt(pos token.Pos, format string, args ...interface{})
-	NumErrors() int
-}
+func InspectAST(n ast.Node, f func(stack []ast.Node)) {
+	var stack []ast.Node
+	var stackPos int
 
-type Rewriter interface {
-	Rewrite(pkg *Package, file *ast.File, ep ErrorPrinter)
-}
+	ast.Inspect(n, func(n ast.Node) bool {
+		if n == nil {
+			stackPos++
+			return true
+		}
+		if stackPos == 0 {
+			old := len(stack)
+			stack = append(stack, nil)
+			stack = stack[:cap(stack)]
+			copy(stack[len(stack)-old:], stack[:old])
+			stackPos = len(stack) - old
+		}
+		stackPos--
+		stack[stackPos] = n
+		f(stack[stackPos:])
+		return true
+	})
 
-func NewErrorPrinter(pkg *Package, w io.Writer) ErrorPrinter {
-	return &errorPrinter{pkg: pkg, w: w}
-}
-
-type errorPrinter struct {
-	pkg *Package
-	w   io.Writer
-	n   int
-}
-
-func (ep *errorPrinter) ErrorAt(pos token.Pos, format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	msg = strings.TrimRight(msg, "\n")
-	msg = strings.Replace(msg, "\n", "\n\t", -1)
-	fmt.Fprintf(ep.w, "%s: %s\n", ep.pkg.Addr(pos), msg)
-	ep.n++
-}
-
-func (ep *errorPrinter) NumErrors() int {
-	return ep.n
-}
-
-func Apply(rw Rewriter, pkgs []*Package, ep ErrorPrinter) {
-	// Rewrite the target package.
-	seen := make(map[string]bool)
-	p := pkgs[0]
-	for _, file := range p.Pkg.Syntax {
-		seen[p.File(file.Package)] = true
-		rw.Rewrite(p, file, ep)
+	if stackPos != len(stack) {
+		panic("internal stack error")
 	}
+}
 
-	// If the target package couldn't be converted, don't bother about importers.
-	if ep.NumErrors() > 0 {
-		return
-	}
-
-	// Make changes in other packages too.
-	// Note that some source files may appear in multiple packages
-	// due to compiling test packages and non-test packages.
-	// Proess each only once.
-	for _, p := range pkgs {
+func (s *Snapshot) FindAST(pos token.Pos) []ast.Node {
+	for _, p := range s.pkgs {
 		for _, file := range p.Pkg.Syntax {
-			name := p.File(file.Package)
-			if seen[name] {
+			if pos < file.Pos() || file.End() <= pos {
 				continue
 			}
-			seen[name] = true
-			rw.Rewrite(p, file, ep)
+
+			var stack []ast.Node
+			ast.Inspect(file, func(n ast.Node) bool {
+				if n == nil || pos < n.Pos() || n.End() <= pos {
+					return false
+				}
+				stack = append(stack, n)
+				return true
+			})
+			for i, j := 0, len(stack)-1; i < j; i, j = i+1, j-1 {
+				stack[i], stack[j] = stack[j], stack[i]
+			}
+			return stack
 		}
 	}
+	return nil
 }

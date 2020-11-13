@@ -11,4 +11,4 @@ func _() {
 }
 -- stderr --
 x.go:7:2: Y declared but not used
-ERROR: errors loading packages
+ERROR: loading initial package: syntax or type errors found
