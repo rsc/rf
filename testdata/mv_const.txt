@@ -1,0 +1,32 @@
+mv X Y
+-- x.go --
+package m
+
+const X int = 1
+const _ = X
+-- p/x.go --
+package p
+
+import "m"
+
+const _ = m.X
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,4 +1,4 @@
+ package m
+
+-const X int = 1
+-const _ = X
++const Y int = 1
++const _ = Y
+diff old/p/x.go new/p/x.go
+--- old/p/x.go
++++ new/p/x.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-const _ = m.X
++const _ = m.Y

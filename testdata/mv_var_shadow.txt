@@ -1,0 +1,14 @@
+mv X Y
+-- x.go --
+package m
+
+var X int
+var _ = X
+
+func _() {
+	Y := 1
+	_ = X
+}
+-- stderr --
+x.go:7:2: Y declared but not used
+ERROR: errors loading packages

@@ -1,0 +1,32 @@
+mv X Y
+-- x.go --
+package m
+
+var X int
+var _ = X
+-- p/x.go --
+package p
+
+import "m"
+
+var _ = m.X
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,4 +1,4 @@
+ package m
+
+-var X int
+-var _ = X
++var Y int
++var _ = Y
+diff old/p/x.go new/p/x.go
+--- old/p/x.go
++++ new/p/x.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-var _ = m.X
++var _ = m.Y

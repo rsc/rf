@@ -1,0 +1,38 @@
+mv X Y
+-- x.go --
+package m
+
+func X() int { return 2 }
+
+var _ = X()
+
+func _() { X := 1; _ = X }
+-- p/x.go --
+package p
+
+import "m"
+
+var _ = m.X()
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +1,7 @@
+ package m
+
+-func X() int { return 2 }
++func Y() int { return 2 }
+
+-var _ = X()
++var _ = Y()
+
+ func _() { X := 1; _ = X }
+diff old/p/x.go new/p/x.go
+--- old/p/x.go
++++ new/p/x.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-var _ = m.X()
++var _ = m.Y()
