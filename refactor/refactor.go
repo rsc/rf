@@ -452,6 +452,8 @@ type ItemKind int
 
 const (
 	_ ItemKind = iota
+	ItemFile
+	ItemDir
 	ItemConst
 	ItemType
 	ItemVar
@@ -462,6 +464,10 @@ const (
 
 func (k ItemKind) String() string {
 	switch k {
+	case ItemFile:
+		return "file"
+	case ItemDir:
+		return "dir"
 	case ItemConst:
 		return "const"
 	case ItemType:
@@ -479,6 +485,14 @@ func (k ItemKind) String() string {
 }
 
 func (p *Package) Lookup(expr string) *Item {
+	// Special cases for directory, file, as in "mv Thing ../newpkg".
+	if strings.Contains(expr, "/") {
+		return &Item{Kind: ItemDir, Name: expr}
+	}
+	if strings.HasSuffix(expr, ".go") {
+		return &Item{Kind: ItemFile, Name: expr}
+	}
+
 	name, rest, more := cut(expr, ".")
 	item := lookupTop(p, name)
 	if item == nil {
@@ -548,10 +562,7 @@ func lookupType(p *Package, outer *Item, typ types.Type, name string) *Item {
 		typ = tn.Underlying()
 	}
 
-	switch typ := typ.(type) {
-	default:
-		log.Fatalf("%T unimplemented", typ)
-	case *types.Struct:
+	if typ, ok := typ.(*types.Struct); ok {
 		n := typ.NumFields()
 		for i := 0; i < n; i++ {
 			f := typ.Field(i)

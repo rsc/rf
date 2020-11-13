@@ -69,6 +69,7 @@ func (b *Buffer) Bytes() []byte {
 	// Sort edits by starting position and then by ending position.
 	// Breaking ties by ending position allows insertions at point x
 	// to be applied before a replacement of the text at [x, y).
+	// Given multiple inserts at the same position, keep in order.
 	sort.Stable(b.q)
 
 	var new []byte

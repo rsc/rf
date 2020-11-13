@@ -107,14 +107,6 @@ func run(dir, pkg string, showDiff bool, stdout, stderr io.Writer, args []string
 
 	snap.Gofmt()
 
-	snap1, err := rf.LoadTyped(snap.Modified()...)
-	if err != nil {
-		return err
-	}
-	if refactor.PrintErrors(stderr, snap1) {
-		return fmt.Errorf("errors reloading modified packages")
-	}
-
 	if showDiff {
 		d, err := snap.Diff()
 		if err != nil {
@@ -122,6 +114,14 @@ func run(dir, pkg string, showDiff bool, stdout, stderr io.Writer, args []string
 		}
 		stdout.Write(d)
 		return nil
+	}
+
+	snap1, err := rf.LoadTyped(snap.Modified()...)
+	if err != nil {
+		return err
+	}
+	if refactor.PrintErrors(stderr, snap1) {
+		return fmt.Errorf("errors reloading modified packages")
 	}
 
 	return snap.Write(stderr)
@@ -141,16 +141,45 @@ func topItem(item *refactor.Item) *refactor.Item {
 }
 
 func cmdMv(p *refactor.Package, args []string) (rw refactor.Rewriter, needImported bool, err error) {
-	if len(args) != 2 {
-		return nil, false, fmt.Errorf("usage: mv old new")
+	if len(args) < 2 {
+		return nil, false, fmt.Errorf("usage: mv old... new")
 	}
-	oldPath, newPath := args[0], args[1]
 
-	oldItem := p.Lookup(oldPath)
-	if oldItem == nil {
-		return nil, false, fmt.Errorf("cannot find %s", oldPath)
+	var items []*refactor.Item
+	for _, arg := range args {
+		items = append(items, p.Lookup(arg))
 	}
-	if p.Lookup(newPath) != nil {
+	for i, item := range items[:len(items)-1] {
+		if item == nil {
+			return nil, false, fmt.Errorf("cannot find %s", args[i])
+		}
+	}
+
+	srcs, dst := items[:len(items)-1], items[len(items)-1]
+	if dst != nil && (dst.Kind == refactor.ItemDir || dst.Kind == refactor.ItemFile) {
+		for _, item := range srcs {
+			if item.Outer == nil && item.Kind != refactor.ItemDir {
+				// ok
+				continue
+			}
+			if item.Kind == refactor.ItemMethod && item.Outer.Kind == refactor.ItemType {
+				// ok
+				continue
+			}
+			return nil, false, fmt.Errorf("cannot move %s to directory %s", item.Kind, dst.Name)
+		}
+
+		// TODO implement
+	}
+
+	// Otherwise, renaming to program identifier, which must not exist.
+	if len(items) != 2 {
+		return nil, false, fmt.Errorf("cannot move multiple items to %s", args[len(args)-1])
+	}
+
+	oldItem, newItem := items[0], items[1]
+	oldPath, newPath := args[0], args[1]
+	if newItem != nil {
 		return nil, false, fmt.Errorf("already have %s", newPath)
 	}
 
@@ -210,19 +239,25 @@ func cmdMv(p *refactor.Package, args []string) (rw refactor.Rewriter, needImport
 
 	// TODO: Rename field in global struct var to plain global var.
 
-	// TODO: Rename method to global function.
-
 	// TODO: Rename global function to method.
+	if oldBase == nil && oldItem.Kind == refactor.ItemFunc &&
+		newBase != nil && newBase.Kind == refactor.ItemType {
+		if _, ok := newBase.Obj.(*types.TypeName); ok {
+			// TODO check method set for newName
+			// TODO check that first argument of old function is receiver
+			// TODO finish
+		}
+	}
+
+	// Rename method to global function.
+	if oldBase.Outer == nil && oldBase.Kind == refactor.ItemType && oldItem.Kind == refactor.ItemMethod && newBase == nil {
+		rw := &methodToFunc{target: oldItem.Obj.(*types.Func), name: newName}
+		return rw, exported, nil
+	}
 
 	// TODO: Rename variable in function to global.
 
 	// TODO: Rename global to variable in function.
-
-	// TODO: Move files to new package.
-
-	// TODO: Move code to new file.
-
-	// TODO: Move code to new package.
 
 	return nil, false, fmt.Errorf("unimplemented replacement: %v -> %v . %v", oldItem, newBase, newName)
 }
@@ -455,6 +490,96 @@ func (r *renameIdent) Rewrite(pkg *refactor.Package, file *ast.File, ep refactor
 			}
 		}
 		pkg.Edit(pkg.File(id.Pos())).Replace(p1.Offset, p2.Offset, r.new)
+		return true
+	})
+}
+
+type methodToFunc struct {
+	target *types.Func
+	name   string
+}
+
+func (r *methodToFunc) Rewrite(pkg *refactor.Package, file *ast.File, ep refactor.ErrorPrinter) {
+	var stack []ast.Node
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		if id, ok := n.(*ast.Ident); ok {
+			if pkg.Pkg.TypesInfo.Defs[id] == r.target {
+				decl := stack[len(stack)-2].(*ast.FuncDecl)
+				replace(pkg, decl.Recv.Opening, decl.Recv.Opening, r.name)
+				sep := ""
+				if len(decl.Type.Params.List) > 0 {
+					sep = ", "
+				}
+				replace(pkg, decl.Recv.Closing, decl.Type.Params.Opening+1, sep)
+				// TODO add param names if needed
+				return true
+			}
+			if pkg.Pkg.TypesInfo.Uses[id] == r.target {
+				// Is the actual receiver a pointer?
+				sig := r.target.Type().(*types.Signature)
+				recvType := sig.Recv().Type()
+				_, recvPtr := recvType.(*types.Pointer)
+
+				// Is the selector a receiver variable or a type?
+				// And is it a pointer?
+				sel := stack[len(stack)-2].(*ast.SelectorExpr)
+				tv, ok := pkg.Pkg.TypesInfo.Types[sel.X]
+				if !ok {
+					println("MISSING TYPEI NFO")
+				}
+				selType := tv.IsType()
+				_, selPtr := tv.Type.(*types.Pointer)
+
+				// Is the selector being called?
+				call, _ := stack[len(stack)-3].(*ast.CallExpr)
+
+				if call == nil {
+					// T.F or x.F or (*T).F or (&x).F
+					if !selType {
+						ep.ErrorAt(id.Pos(), "cannot rewrite method value using function")
+						return true
+					}
+					if selPtr && !recvPtr {
+						ep.ErrorAt(id.Pos(), "cannot use pointer method value with function using non-pointer receiver")
+						return true
+					}
+
+					// T.F or (*T).F, matching the actual function.
+					replace(pkg, sel.Pos(), sel.End(), r.name)
+					return true
+				}
+
+				// Rewrite call.
+				// May need implicit address or star on receiver.
+				// TODO: check scope for r.name
+				if selType {
+					replace(pkg, call.Pos(), call.Lparen, r.name)
+					if selPtr && !recvPtr {
+						// TODO parens for star
+						replace(pkg, call.Lparen+1, call.Lparen+1, "*")
+					}
+					return true
+				}
+				replace(pkg, sel.X.Pos(), sel.X.Pos(), r.name+"(")
+				if recvPtr && !selPtr {
+					replace(pkg, sel.X.Pos(), sel.X.Pos(), "&")
+				}
+				if selPtr && !recvPtr {
+					replace(pkg, sel.X.Pos(), sel.X.Pos(), "*")
+				}
+				// TODO maybe parens for *
+				replace(pkg, sel.X.End(), call.Lparen+1, "")
+				if len(call.Args) > 0 {
+					replace(pkg, call.Lparen+1, call.Lparen+1, ", ")
+				}
+				return true
+			}
+		}
 		return true
 	})
 }
