@@ -7,11 +7,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"rsc.io/rf/refactor"
 )
@@ -19,7 +19,7 @@ import (
 var showDiff = flag.Bool("diff", false, "show diff instead of writing files")
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: rf [-diff] 'old->new'...\n")
+	fmt.Fprintf(os.Stderr, "usage: rf [-diff] script [pkg ...]\n")
 	os.Exit(2)
 }
 
@@ -30,85 +30,102 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 	args := flag.Args()
-	if len(args) == 0 {
+	if len(args) < 1 {
 		usage()
 	}
+	script, pkgs := args[0], args[1:]
 
-	if err := run(".", ".", *showDiff, os.Stdout, os.Stderr, args); err != nil {
+	rf, err := refactor.New(".", pkgs...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := run(rf, script); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(dir, pkg string, showDiff bool, stdout, stderr io.Writer, args []string) error {
-	cmd := cmds[args[0]]
-	if cmd == nil {
-		return fmt.Errorf("unknown command %s", args[0])
-	}
+var cmds = map[string]func(*refactor.Snapshot, string) ([]string, bool){
+	"mv": cmdMv,
+	"ex": cmdEx,
+}
 
-	rf, err := refactor.New(dir, pkg)
-	if err != nil {
-		return err
-	}
-	rf.Stdout = stdout
-	rf.Stderr = stderr
-	rf.ShowDiff = showDiff
+type loader interface {
+	Load(...string) (*refactor.Snapshot, error)
+}
 
-	snap, err := rf.LoadTyped()
-	if err != nil {
-		return fmt.Errorf("loading initial package: %v", err)
-	}
+func run(rf *refactor.Refactor, script string) error {
+	var base loader = rf
+	var snap *refactor.Snapshot
 
-	morePackages, needImporters, err := cmd(snap, args[1:])
-	if err != nil {
-		return err
-	}
-	if snap.NumErrors() > 0 {
-		return fmt.Errorf("errors converting initial package")
-	}
-
-	// Might have identified that the transformation
-	// was incomplete and needs to be done over again
-	// with additional packages.
-	if len(morePackages) > 0 || needImporters {
-		extra := morePackages
-		if needImporters {
-			importers, err := rf.Importers()
-			if err != nil {
-				return err
-			}
-			extra = append(extra, importers...)
-		}
-		snap, err = rf.LoadTyped(extra...)
-		if err != nil {
-			return fmt.Errorf("loading additional packages: %v", err)
+	text := script
+	for text != "" {
+		var line string
+		line, text, _ = cut(text, "\n")
+		line = strings.TrimSpace(line)
+		cmd, args, _ := cutAny(line, " \t")
+		if cmd == "" {
+			continue
 		}
 
-		// Rerun the command on the expanded package set.
-		evenMore, _, err := cmd(snap, args[1:])
+		fn := cmds[cmd]
+		if fn == nil {
+			return fmt.Errorf("unknown command %s", cmd)
+		}
+
+		var err error
+		snap, err = base.Load()
 		if err != nil {
 			return err
 		}
-		if len(evenMore) > 0 {
-			return fmt.Errorf("after loading %v, need %v - did not converge", morePackages, evenMore)
+
+		more, exp := fn(snap, args)
+		if snap.Errors() > 0 {
+			return err
 		}
-		if snap.NumErrors() > 0 {
-			return fmt.Errorf("errors converting additional packages")
+
+		if len(more) > 0 || exp {
+			if exp {
+				pkgs, err := rf.Importers(snap)
+				if err != nil {
+					return err
+				}
+				more = append(more, pkgs...)
+			}
+			snap, err = base.Load(more...)
+			if err != nil {
+				return err
+			}
+
+			evenMore, _ := fn(snap, args)
+			if snap.Errors() > 0 {
+				return err
+			}
+			if len(evenMore) > 0 {
+				return fmt.Errorf("%s did not converge: after %v, needs %v", cmd, more, evenMore)
+			}
 		}
+
+		snap.Gofmt()
+		base = snap
 	}
 
-	snap.Gofmt()
+	if snap == nil {
+		// Did nothing.
+		return nil
+	}
 
-	// Show diff before type-checking, so that it's easier to understand errors.
+	// Show diff before final load, so that it's easier to understand errors.
 	if rf.ShowDiff {
 		d, err := snap.Diff()
 		if err != nil {
 			return err
 		}
-		stdout.Write(d)
+		rf.Stdout.Write(d)
 	}
 
-	// Reload packages before writing, to make sure the rewrites are valid.
-	if _, err := rf.LoadTyped(snap.Modified()...); err != nil {
+	// Reload packages one last time before writing,
+	// to make sure the rewrites are valid.
+	if _, err := snap.Load(snap.Modified()...); err != nil {
 		return fmt.Errorf("checking rewritten packages: %v", err)
 	}
 
@@ -116,11 +133,7 @@ func run(dir, pkg string, showDiff bool, stdout, stderr io.Writer, args []string
 		return nil
 	}
 
-	return snap.Write(stderr)
-}
-
-var cmds = map[string]func(*refactor.Snapshot, []string) (morePkgs []string, changesExports bool, err error){
-	"mv": cmdMv,
+	return snap.Write()
 }
 
 var isGoIdent = regexp.MustCompile(`^[\p{L}_][\p{L}\p{Nd}_]*$`)
@@ -135,6 +148,14 @@ func topItem(item *refactor.Item) *refactor.Item {
 func cut(s, sep string) (before, after string, ok bool) {
 	if i := strings.Index(s, sep); i >= 0 {
 		return s[:i], s[i+len(sep):], true
+	}
+	return s, "", false
+}
+
+func cutAny(s, any string) (before, after string, ok bool) {
+	if i := strings.IndexAny(s, any); i >= 0 {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		return s[:i], s[i+size:], true
 	}
 	return s, "", false
 }

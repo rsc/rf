@@ -1,0 +1,19 @@
+ex var z int; z+1 -> z+2
+-- x.go --
+package p
+
+var i int
+var f float64
+var _ = i + 1
+var _ = f + 1
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,5 +2,5 @@
+
+ var i int
+ var f float64
+-var _ = i + 1
++var _ = i + 2
+ var _ = f + 1

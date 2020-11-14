@@ -10,10 +10,10 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"golang.org/x/tools/txtar"
+	"rsc.io/rf/refactor"
 )
 
 func TestRun(t *testing.T) {
@@ -54,12 +54,18 @@ func TestRun(t *testing.T) {
 				}
 			}
 
-			args := strings.Fields(string(ar.Comment))
 			var stdout, stderr bytes.Buffer
-			err = run(dir, ".", true, &stdout, &stderr, args)
+			rf, err := refactor.New(dir, ".")
 			if err != nil {
-				fmt.Fprintf(&stderr, "ERROR: %v\n", err)
+				t.Fatal(err)
 			}
+			rf.Stdout = &stdout
+			rf.Stderr = &stderr
+			rf.ShowDiff = true
+			if err := run(rf, string(ar.Comment)); err != nil {
+				fmt.Fprintf(rf.Stderr, "ERROR: %v\n", err)
+			}
+
 			cmp := func(name string, have, want []byte) {
 				have = trimSpace(have)
 				want = trimSpace(want)
@@ -68,8 +74,8 @@ func TestRun(t *testing.T) {
 					t.Errorf("want:\n%s", want)
 				}
 			}
-			cmp("stdout", stdout.Bytes(), wantStdout.Data)
 			cmp("stderr", stderr.Bytes(), wantStderr.Data)
+			cmp("stdout", stdout.Bytes(), wantStdout.Data)
 		})
 	}
 }

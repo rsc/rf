@@ -5,6 +5,7 @@
 package refactor
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -17,6 +18,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -34,46 +36,19 @@ type Refactor struct {
 	ShowDiff bool
 
 	dir     string
-	self    *packages.Package
 	modRoot string
 	modPath string
+	targets []*packages.Package
 }
 
 // New returns a new refactoring,
 // editing the package in the given directory (usually ".").
-func New(dir, pkg string) (*Refactor, error) {
+func New(dir string, pkgs ...string) (*Refactor, error) {
 	dir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil, err
 	}
 	dir = filepath.Clean(dir)
-
-	cfg := &packages.Config{
-		Mode:  packages.NeedName | packages.NeedModule,
-		Dir:   dir,
-		Tests: true, // in case this is a test-only package
-	}
-	pkgs, err := packages.Load(cfg, pkg)
-	if err != nil {
-		return nil, err
-	}
-	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("cannot load " + pkg + " in " + dir)
-	}
-
-	// TODO: pkgs[0].Module should work, but go list -json cmd/compile
-	// doesn't show a Module.
-	/*
-		m := pkgs[0].Module
-		if m == nil {
-			return nil, fmt.Errorf("cannot find module for " + dir)
-		}
-		if !m.Main {
-			return nil, fmt.Errorf("cannot refactor module in module cache")
-		}
-		modRoot := m.Dir
-		modPath := m.Path
-	*/
 
 	cmd := exec.Command("go", "env", "GOMOD")
 	cmd.Dir = dir
@@ -99,58 +74,89 @@ func New(dir, pkg string) (*Refactor, error) {
 	}
 	modPath := d.Module.Path
 
+	cfg := &packages.Config{
+		Mode:  packages.NeedName | packages.NeedModule,
+		Dir:   dir,
+		Tests: true, // in case this is a test-only package
+	}
+	list, err := packages.Load(cfg, pkgs...)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, fmt.Errorf("no matching packages")
+	}
+
+	for _, pkg := range list {
+		// pkg.Module should always be non-nil,
+		// but when working in $GOROOT it is not filled in for cmd
+		// TODO: Need to figure out whether it's not filled in
+		// for std/cmd packages even when outside std/cmd.
+		if pkg.Module != nil && !pkg.Module.Main {
+			return nil, fmt.Errorf("cannot refactor package %s outside current module", pkg.PkgPath)
+		}
+	}
+
 	r := &Refactor{
-		dir:     dir,
-		self:    pkgs[0],
-		modRoot: modRoot,
-		modPath: modPath,
 		Stdout:  os.Stdout,
 		Stderr:  os.Stderr,
+		dir:     dir,
+		modRoot: modRoot,
+		modPath: modPath,
+		targets: list,
 	}
 	return r, nil
 }
 
-func (r *Refactor) ModPath() string {
-	return r.modPath
-}
+func (r *Refactor) Importers(snap *Snapshot) ([]string, error) {
+	var overlay map[string][]byte
+	if snap != nil {
+		overlay = snap.files.overlay()
+	}
 
-func (r *Refactor) ModRoot() string {
-	return r.modRoot
-}
-
-func (r *Refactor) PkgPath() string {
-	return r.self.PkgPath
-}
-
-func (r *Refactor) Importers() ([]string, error) {
 	cfg := &packages.Config{
-		Mode:  packages.NeedName | packages.NeedImports,
-		Dir:   r.modRoot,
-		Tests: true,
+		Mode:    packages.NeedName | packages.NeedImports,
+		Dir:     r.modRoot,
+		Tests:   true,
+		Overlay: overlay,
 	}
 
-	// Load all the packages in the module that might import the target.
-	// If the refactoring target is an internal package,
-	// we only need to consider other packages that can see it,
-	// not everything in the module.
-	pattern := "./..."
-	if strings.Contains(r.self.PkgPath, "/internal/") {
-		if prefix, _, _ := cut(r.self.PkgPath, "/internal/"); prefix != r.modPath {
-			pattern = "./" + prefix[len(r.modPath)+1:] + "/..."
+	// Build list of all the packages in the module that might
+	// import the targets. If a target is an internal package,
+	// its visibility is reduced. It's OK to list the same pattern
+	// multiple times.
+	var patterns []string
+	for _, target := range r.targets {
+		prefix, _, ok := cut(target.PkgPath, "/internal/")
+		if !ok || prefix == r.modPath {
+			patterns = []string{"./..."}
+			break
 		}
+		patterns = append(patterns, "./"+prefix[len(r.modPath)+1:]+"/...")
 	}
-	pkgs, err := packages.Load(cfg, pattern)
+	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		return nil, err
 	}
 
 	// Filter results down to those that do import the target.
-	seen := map[string]bool{r.self.PkgPath: true}
+	seen := make(map[string]bool)
+	for _, target := range r.targets {
+		seen[target.PkgPath] = true
+	}
 	var paths []string
 	for _, pkg := range pkgs {
-		if pkg.Imports[r.self.PkgPath] == nil {
+		need := false
+		for _, target := range r.targets {
+			if pkg.Imports[target.PkgPath] != nil {
+				need = true
+				break
+			}
+		}
+		if !need {
 			continue
 		}
+
 		path := pkg.PkgPath
 		switch {
 		case strings.HasSuffix(path, ".test"):
@@ -172,29 +178,44 @@ func (r *Refactor) Importers() ([]string, error) {
 // A Snapshot is a collection of loaded packages
 // and pending edits.
 type Snapshot struct {
-	r      *Refactor
-	fset   *token.FileSet
-	files  fileCache
-	pkgs   []*packages.Package
-	edits  map[string]*edit.Buffer
-	added  map[string][]string
-	errors int
+	r       *Refactor
+	old     *Snapshot
+	fset    *token.FileSet
+	files   fileCache
+	targets []*packages.Package
+	pkgs    []*packages.Package
+	edits   map[string]*edit.Buffer
+	added   map[string][]string
+	errors  int
+}
+
+func (s *Snapshot) overlay() map[string][]byte {
+	if s == nil {
+		return nil
+	}
+	return s.files.overlay()
 }
 
 func (s *Snapshot) ErrorAt(pos token.Pos, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	msg = strings.TrimRight(msg, "\n")
 	msg = strings.Replace(msg, "\n", "\n\t", -1)
-	fmt.Fprintf(s.r.Stderr, "%s: %s\n", s.Addr(pos), msg)
+	if pos == token.NoPos {
+		fmt.Fprintf(s.r.Stderr, "rf: %s\n", msg)
+	} else {
+		fmt.Fprintf(s.r.Stderr, "%s: %s\n", s.Addr(pos), msg)
+	}
 	s.errors++
 }
 
-func (s *Snapshot) NumErrors() int {
+func (s *Snapshot) Errors() int {
 	return s.errors
 }
 
-func (s *Snapshot) Target() *packages.Package {
-	return s.pkgs[0]
+func (s *Snapshot) Fset() *token.FileSet { return s.fset }
+
+func (s *Snapshot) Targets() []*packages.Package {
+	return s.targets
 }
 
 func (s *Snapshot) Packages() []*packages.Package {
@@ -220,16 +241,26 @@ func (fc *fileCache) cacheRead(name string, src []byte) []byte {
 	return src
 }
 
+func (fc *fileCache) overlay() map[string][]byte {
+	m := make(map[string][]byte)
+	fc.mu.Lock()
+	for k, v := range fc.data {
+		m[k] = v
+	}
+	fc.mu.Unlock()
+	return m
+}
+
 func (fc *fileCache) ParseFile(fset *token.FileSet, filename string, src []byte) (*ast.File, error) {
 	const mode = parser.AllErrors | parser.ParseComments
 	return parser.ParseFile(fset, filename, fc.cacheRead(filename, src), mode)
 }
 
-func (r *Refactor) Load(extra ...string) (*Snapshot, error) {
+func (r *Refactor) LoadUntyped(extra ...string) (*Snapshot, error) {
 	return r.load(nil, 0, extra)
 }
 
-func (r *Refactor) LoadTyped(extra ...string) (*Snapshot, error) {
+func (r *Refactor) Load(extra ...string) (*Snapshot, error) {
 	return r.load(nil, packages.NeedTypes|packages.NeedTypesInfo, extra)
 }
 
@@ -238,23 +269,25 @@ func (s *Snapshot) Load(extra ...string) (*Snapshot, error) {
 }
 
 func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) (*Snapshot, error) {
-	g := &Snapshot{
+	s := &Snapshot{
 		r:     r,
+		old:   base,
 		fset:  token.NewFileSet(),
 		edits: make(map[string]*edit.Buffer),
 		added: make(map[string][]string),
 	}
 	if base != nil {
 		for name, edit := range base.edits {
-			g.files.cacheRead(name, edit.Bytes())
+			s.files.cacheRead(name, edit.Bytes())
 		}
 	}
 	cfg := &packages.Config{
 		Mode:      packages.NeedName | packages.NeedSyntax | mode,
 		Dir:       r.dir,
 		Tests:     true,
-		Fset:      g.fset,
-		ParseFile: g.files.ParseFile,
+		Fset:      s.fset,
+		ParseFile: s.files.ParseFile,
+		Overlay:   s.files.overlay(),
 	}
 	pkgs, err := packages.Load(cfg, append([]string{"."}, extra...)...)
 	if err != nil {
@@ -274,43 +307,54 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		}
 	}
 	if failed {
-		return nil, fmt.Errorf("syntax or type errors found")
+		return nil, fmt.Errorf("errors found")
 	}
 
-	var self, selfTest *packages.Package
+	targets := make([]*packages.Package, len(r.targets))
 	for _, p := range pkgs {
-		if strings.HasSuffix(p.ID, ".test") {
+		if strings.HasSuffix(p.ID, ".test") || strings.HasSuffix(p.ID, "]") {
 			continue
 		}
-		if p.PkgPath == r.self.PkgPath {
-			if p.ID == p.PkgPath {
-				// Actual package
-				if self != nil {
-					return nil, fmt.Errorf("duplicate results for target")
+		for i, t := range r.targets {
+			if p.PkgPath == t.PkgPath {
+				// Save if this is the package we expect,
+				// and replace if it's the internal test package,
+				// which has strictly more code.
+				if targets[i] == nil || targets[i].ID == p.PkgPath && p.ID != p.PkgPath {
+					targets[i] = p
 				}
-				self = p
-				continue
-			} else {
-				// Package built with tests.
-				if selfTest != nil {
-					return nil, fmt.Errorf("duplicate results for target test")
-				}
-				selfTest = p
-				continue
 			}
 		}
-		g.pkgs = append(g.pkgs, p)
 	}
-	if selfTest != nil && self != nil {
-		g.pkgs = append([]*packages.Package{selfTest, self}, g.pkgs...)
-	} else if selfTest != nil {
-		g.pkgs = append([]*packages.Package{selfTest}, g.pkgs...)
-	} else if self != nil {
-		g.pkgs = append([]*packages.Package{self}, g.pkgs...)
-	} else {
-		return nil, fmt.Errorf("did not find target")
+	var missing []string
+	for i, p := range targets {
+		if p == nil {
+			missing = append(missing, r.targets[i].PkgPath)
+		}
 	}
-	return g, nil
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("missing expected packages: %v", missing)
+	}
+
+	have := make(map[*packages.Package]bool)
+	for _, p := range targets {
+		have[p] = true
+	}
+
+	all := targets
+	for _, p := range pkgs {
+		if strings.HasSuffix(p.ID, ".test") || strings.HasSuffix(p.ID, "]") {
+			continue
+		}
+		if !have[p] {
+			have[p] = true
+			all = append(all, p)
+		}
+	}
+
+	s.targets = targets
+	s.pkgs = all
+	return s, nil
 }
 
 // shortPath returns an absolute or relative name for path, whatever is shorter.
@@ -369,17 +413,35 @@ func (s *Snapshot) File(pos token.Pos) string {
 	return s.fset.Position(pos).Filename
 }
 
+func (s *Snapshot) oldBytes(name string) []byte {
+	if s.old != nil {
+		b := s.old.oldBytes(name)
+		if b != nil {
+			return b
+		}
+	}
+	return s.files.cacheRead(name, nil)
+}
+
 func (s *Snapshot) Diff() ([]byte, error) {
 	var diffs []byte
 	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
 			name := s.File(file.Package)
-			buf, ok := s.edits[name]
-			if !ok {
+			var newBytes []byte
+			if buf, ok := s.edits[name]; ok {
+				newBytes = buf.Bytes()
+			} else {
+				if text := s.files.cacheRead(name, nil); text != nil {
+					newBytes = text
+				}
+			}
+			if newBytes == nil {
 				continue
 			}
+
 			rel, err := filepath.Rel(s.r.modRoot, name)
-			d, err := diff.Diff("old/"+rel, s.files.cacheRead(name, nil), "new/"+rel, buf.Bytes())
+			d, err := diff.Diff("old/"+rel, s.oldBytes(name), "new/"+rel, newBytes)
 			if err != nil {
 				return nil, err
 			}
@@ -417,15 +479,23 @@ func (s *Snapshot) Gofmt() {
 			if !ok {
 				continue
 			}
-			text, err := format.Source(buf.Bytes())
-			if err == nil {
-				s.edits[name] = edit.NewBuffer(text)
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "out.go", buf.Bytes(), parser.ParseComments)
+			if err != nil {
+				continue
 			}
+			deleteUnusedImports(fset, file)
+
+			var out bytes.Buffer
+			if err := format.Node(&out, fset, file); err != nil {
+				continue
+			}
+			s.edits[name] = edit.NewBuffer(out.Bytes())
 		}
 	}
 }
 
-func (s *Snapshot) Write(stderr io.Writer) error {
+func (s *Snapshot) Write() error {
 	failed := false
 	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
@@ -435,7 +505,7 @@ func (s *Snapshot) Write(stderr io.Writer) error {
 				continue
 			}
 			if err := ioutil.WriteFile(name, buf.Bytes(), 0666); err != nil {
-				fmt.Fprintf(stderr, "%s\n", err)
+				fmt.Fprintf(s.r.Stderr, "%s\n", err)
 				failed = true
 			}
 		}
@@ -650,7 +720,7 @@ func (s *Snapshot) findFile(pos token.Pos) (*packages.Package, *ast.File) {
 	return nil, nil
 }
 
-func (s *Snapshot) FindAST(pos token.Pos) []ast.Node {
+func (s *Snapshot) SyntaxAt(pos token.Pos) []ast.Node {
 	_, file := s.findFile(pos)
 	if file == nil {
 		return nil
@@ -670,7 +740,7 @@ func (s *Snapshot) FindAST(pos token.Pos) []ast.Node {
 	return stack
 }
 
-func (s *Snapshot) NeedImport(pos token.Pos, id, path string) {
+func (s *Snapshot) NeedImport(pos token.Pos, id, pkg string) {
 	_, file := s.findFile(pos)
 	if file == nil {
 		fmt.Println(s.Position(pos))
@@ -678,20 +748,56 @@ func (s *Snapshot) NeedImport(pos token.Pos, id, path string) {
 	}
 
 	for _, imp := range file.Imports {
-		u, err := strconv.Unquote(imp.Path.Value)
-		if err == nil && u == path {
-			// TODO check identifier
-			return
+		if importPath(imp) == pkg {
+			name := importName(imp)
+			if name == "" {
+				name = path.Base(pkg)
+			}
+			if id == name {
+				return
+			}
 		}
 	}
 
-	name := s.Position(file.Package).Filename
-	added := s.added[name]
+	filename := s.Position(file.Package).Filename
+	added := s.added[filename]
+	key := id + " " + pkg
 	for _, p := range added {
-		if path == p {
+		if p == key {
 			return
 		}
 	}
-	s.added[name] = append(s.added[name], path)
-	s.Edit(file.Name.End(), file.Name.End(), "\nimport \""+path+"\"")
+	s.added[filename] = append(s.added[filename], key)
+
+	ident := ""
+	if id != path.Base(pkg) {
+		ident = id + " "
+	}
+
+	s.Edit(file.Name.End(), file.Name.End(), "\nimport "+ident+strconv.Quote(pkg))
+}
+
+func (s *Snapshot) TargetFileByName(name string) (*packages.Package, *ast.File) {
+	if !filepath.IsAbs(name) {
+		name = filepath.Join(s.r.dir, name)
+	}
+	for _, p := range s.targets {
+		for _, file := range p.Syntax {
+			if s.Position(file.Package).Filename == name {
+				return p, file
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (s *Snapshot) PackageAt(pos token.Pos) *packages.Package {
+	for _, p := range s.targets {
+		for _, file := range p.Syntax {
+			if file.Pos() <= pos && pos <= file.End() {
+				return p
+			}
+		}
+	}
+	return nil
 }

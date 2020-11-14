@@ -1,0 +1,18 @@
+ex var z int; z*2 + y -> z<<1 + z
+-- x.go --
+package p
+
+var x int
+var z = x*3*2 + y
+var y int
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,5 +1,5 @@
+ package p
+
+ var x int
+-var z = x*3*2 + y
++var z = x*3<<1 + x*3
+ var y int

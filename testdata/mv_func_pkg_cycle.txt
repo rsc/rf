@@ -7,6 +7,8 @@ import "m/q"
 func X() int {
 	return q.Q + Y
 }
+
+var _ = X()
 -- y.go --
 package p
 
@@ -15,18 +17,24 @@ var Y int
 package q
 
 var Q int
+-- stderr --
+-: import cycle not allowed: import stack: [m m/q m]
+x.go:3:8: could not import m/q (import cycle: [m/q m])
+ERROR: checking rewritten packages: errors found
 -- stdout --
 diff old/x.go new/x.go
 --- old/x.go
 +++ new/x.go
-@@ -1,7 +1 @@
- package p
--
--import "m/q"
--
+@@ -2,8 +2,4 @@
+
+ import "m/q"
+
 -func X() int {
 -	return q.Q + Y
 -}
+-
+-var _ = X()
++var _ = q.X()
 diff old/q/q.go new/q/q.go
 --- old/q/q.go
 +++ new/q/q.go

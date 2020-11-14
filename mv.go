@@ -9,10 +9,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"path/filepath"
 	"reflect"
-	"unicode"
-	"unicode/utf8"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/edit"
@@ -47,9 +45,11 @@ func inScope(name string, obj types.Object) posChecker {
 	}
 }
 
-func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesExports bool, err error) {
+func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
+	args := strings.Fields(argsText)
 	if len(args) < 2 {
-		return nil, false, fmt.Errorf("usage: mv old... new")
+		snap.ErrorAt(token.NoPos, "usage: mv old... new")
+		return
 	}
 
 	var items []*refactor.Item
@@ -58,7 +58,8 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 	}
 	for i, item := range items[:len(items)-1] {
 		if item == nil {
-			return nil, false, fmt.Errorf("cannot find %s", args[i])
+			snap.ErrorAt(token.NoPos, "cannot find %s", args[i])
+			return
 		}
 	}
 
@@ -73,33 +74,35 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 				// ok
 				continue
 			}
-			return nil, false, fmt.Errorf("cannot move %s to directory %s", item.Kind, dst.Name)
+			snap.ErrorAt(token.NoPos, "cannot move %s to directory %s", item.Kind, dst.Name)
+			return
 		}
 
 		if len(srcs) == 1 && srcs[0].Outer == nil && srcs[0].Kind != refactor.ItemFile && dst.Kind == refactor.ItemFile {
 			mvCode(snap, srcs[0], dst.Name)
-			return nil, false, nil
+			return
 		}
 		if len(srcs) == 1 && srcs[0].Outer == nil && srcs[0].Kind != refactor.ItemFile && dst.Kind == refactor.ItemDir {
 			for _, pkg := range snap.Packages() {
 				if pkg.PkgPath == dst.Name {
 					mvCodePkg(snap, srcs[0], pkg)
-					return nil, false, nil
+					return
 				}
 			}
-			return []string{dst.Name}, false, nil
+			return []string{dst.Name}, false
 		}
 	}
 
 	// Otherwise, renaming to program identifier, which must not exist.
 	if len(items) != 2 {
-		return nil, false, fmt.Errorf("cannot move multiple items to %s", args[len(args)-1])
+		snap.ErrorAt(token.NoPos, "cannot move multiple items to %s", args[len(args)-1])
+		return
 	}
 
-	old, newItem := items[0], items[1]
-	oldPath, newPath := args[0], args[1]
+	old, newItem, newPath := items[0], items[1], args[1]
 	if newItem != nil {
-		return nil, false, fmt.Errorf("already have %s", newPath)
+		snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
+		return
 	}
 
 	var newOuter *refactor.Item
@@ -107,7 +110,8 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 	if ok {
 		newOuter = snap.Lookup(newPrefix)
 		if newOuter == nil {
-			return nil, false, fmt.Errorf("cannot find %s", newPrefix)
+			snap.ErrorAt(token.NoPos, "cannot find destination %s", newPrefix)
+			return
 		}
 	} else {
 		newName = newPath
@@ -116,24 +120,25 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 	// Check that newName is a valid identifier.
 	// (Arbitrary syntax would make simple string search for dots invalid, among other problems.)
 	if !isGoIdent.MatchString(newName) {
-		return nil, false, fmt.Errorf("malformed replacement: not a valid Go identifier: %s", newName)
+		snap.ErrorAt(token.NoPos, "malformed replacement: not a valid Go identifier: %s", newName)
+		return
 	}
-
-	r, _ := utf8.DecodeRuneInString(oldPath)
-	exported := unicode.IsUpper(r)
 
 	// Rename of global.
 	if old.Outer == nil && newOuter == nil {
 		rewriteDefn(snap, old, newName)
 		rewriteUses(snap, old, newName, notInScope(newName))
-		return nil, exported, nil
+		exp = token.IsExported(old.Name)
+		return
 	}
 
 	// Rename of struct field or method.
 	if old.Outer != nil && newOuter != nil && old.Outer.Obj == newOuter.Obj {
 		rewriteDefn(snap, old, newName)
 		rewriteUses(snap, old, newName, nil)
-		return nil, exported, nil
+		_, last, _ := cutLast(old.Name, ".")
+		exp = token.IsExported(last)
+		return
 	}
 
 	// Rename global var to new field in global var of type struct.
@@ -158,8 +163,8 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 			removeDecl(snap, old)
 			addStructField(snap, structPos, newName, old.Obj.Type())
 			rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
-
-			return nil, exported, nil
+			exp = token.IsExported(old.Name)
+			return
 		}
 	}
 
@@ -178,18 +183,21 @@ func cmdMv(snap *refactor.Snapshot, args []string) (morePkgs []string, changesEx
 	// Rename method to global function.
 	if old.Kind == refactor.ItemMethod && old.Outer.Outer == nil && old.Outer.Kind == refactor.ItemType && newOuter == nil {
 		methodToFunc(snap, old.Obj.(*types.Func), newName)
-		return nil, exported, nil
+		_, last, _ := cutLast(old.Name, ".")
+		exp = token.IsExported(last)
+		return
 	}
 
 	// TODO: Rename variable in function to global.
 
 	// TODO: Rename global to variable in function.
 
-	return nil, false, fmt.Errorf("unimplemented replacement: %v -> %v . %v", old, newOuter, newName)
+	snap.ErrorAt(token.NoPos, "unimplemented replacement: %v -> %v . %v", old, newOuter, newName)
+	return
 }
 
 func rewriteDefn(snap *refactor.Snapshot, old *refactor.Item, new string) {
-	stack := snap.FindAST(old.Obj.Pos())
+	stack := snap.SyntaxAt(old.Obj.Pos())
 	// For a function declaration, the FuncType ends up spuriously on the stack.
 	// (It is considered to start at the func keyword and end after the results,
 	// so it sits both before and after the Ident, and it is walked after the Ident.)
@@ -233,7 +241,7 @@ func StackTypes(list []ast.Node) string {
 
 // TODO: Return doc comments.
 func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
-	stack := snap.FindAST(old.Obj.Pos())
+	stack := snap.SyntaxAt(old.Obj.Pos())
 	// stack is *ast.Ident *ast.ValueSpec *ast.GenDecl
 	spec := stack[1].(*ast.ValueSpec)
 	decl := stack[2].(*ast.GenDecl)
@@ -267,7 +275,7 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 }
 
 func addStructField(snap *refactor.Snapshot, structPos token.Pos, name string, typ types.Type) {
-	stack := snap.FindAST(structPos)
+	stack := snap.SyntaxAt(structPos)
 
 	var xtyp ast.Expr
 Loop:
@@ -307,7 +315,7 @@ Loop:
 func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 	// Convert method declaration.
 	// Insert name before receiver list.
-	stack := snap.FindAST(method.Pos()) // FuncType Ident FuncDecl
+	stack := snap.SyntaxAt(method.Pos()) // FuncType Ident FuncDecl
 	decl := stack[2].(*ast.FuncDecl)
 	snap.Edit(decl.Recv.Opening, decl.Recv.Opening, " "+name)
 
@@ -318,7 +326,20 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 	}
 	snap.Edit(decl.Recv.Closing, decl.Type.Params.Opening+1, sep)
 
-	// TODO: Need to add names to receiver or params if some were named and others not.
+	// If receiver is named but params are not, or vice versa,
+	// need to add _ to each name.
+	if len(decl.Type.Params.List) > 0 &&
+		(len(decl.Recv.List[0].Names) == 0) != (len(decl.Type.Params.List[0].Names) == 0) {
+		if len(decl.Recv.List[0].Names) == 0 {
+			pos := decl.Recv.List[0].Type.Pos()
+			snap.Edit(pos, pos, "_ ")
+		} else {
+			for _, f := range decl.Type.Params.List {
+				pos := f.Type.Pos()
+				snap.Edit(pos, pos, "_ ")
+			}
+		}
+	}
 
 	// Find and convert method uses.
 	// But first, is this a pointer method or a value method?
@@ -351,8 +372,7 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 			selType := tv.IsType()
 			_, selPtr := tv.Type.(*types.Pointer)
 
-			// TODO: walk past parens
-			call, _ := stack[2].(*ast.CallExpr)
+			call, _ := stack[nonParen(stack, 2)].(*ast.CallExpr)
 			if call == nil {
 				// Method value.
 				if !selType { // x.M
@@ -372,7 +392,8 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 				// T.M(rcvr, x) -> newname(rcvr, x).
 				snap.Edit(call.Pos(), call.Lparen, name)
 				if selPtr && !recvPtr { // (*T).M(rcvr, x) -> newname(*rcvr, x)
-					// TODO parens
+					// There are no binary operators that can yield a pointer,
+					// so no possible need for parens around rcvr.
 					snap.Edit(call.Lparen+1, call.Lparen+1, "*")
 				}
 				return
@@ -387,31 +408,39 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 				snap.Edit(call.Lparen+1, call.Lparen+1, ", ")
 			}
 			if recvPtr && !selPtr {
+				// There are no binary operators that can yield an addressable expression,
+				// so no possible need for parens around x..
 				snap.Edit(sel.X.Pos(), sel.X.Pos(), "&")
 			}
 			if selPtr && !recvPtr {
+				// There are no binary operators that can yield a pointer,
+				// so no possible need for parens around x.
 				snap.Edit(sel.X.Pos(), sel.X.Pos(), "*")
 			}
 		})
 	})
 }
 
-func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
-	// Find target file.
-	var dst token.Pos
-	for _, file := range snap.Target().Syntax {
-		p := snap.Position(file.Package)
-		if filepath.Base(p.Filename) == targetFile {
-			dst = file.End()
+func nonParen(stack []ast.Node, i int) int {
+	for ; i < len(stack); i++ {
+		if _, ok := stack[i].(*ast.ParenExpr); !ok {
 			break
 		}
 	}
-	if dst == token.NoPos {
-		snap.ErrorAt(token.NoPos, "cannot find file")
+	return i
+}
+
+func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
+	// Find target file.
+	_, file := snap.TargetFileByName(targetFile)
+	if file == nil {
+		snap.ErrorAt(token.NoPos, "cannot find file %s in target packages", targetFile)
 		return
 	}
+	dst := file.End()
 
-	stack := snap.FindAST(old.Obj.Pos())
+	srcPkg := snap.PackageAt(old.Obj.Pos())
+	stack := snap.SyntaxAt(old.Obj.Pos())
 	var decl ast.Node
 	switch n := stack[2].(type) {
 	case *ast.GenDecl:
@@ -425,9 +454,8 @@ func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
 	// Make sure target file has the necessary imports.
 	refactor.InspectAST(decl, func(stack []ast.Node) {
 		if id, ok := stack[0].(*ast.Ident); ok {
-			if p, ok := snap.Target().TypesInfo.Uses[id].(*types.PkgName); ok {
-				println("ID", p.Id())
-				snap.NeedImport(dst, p.Id(), p.Imported().Path())
+			if p, ok := srcPkg.TypesInfo.Uses[id].(*types.PkgName); ok {
+				snap.NeedImport(dst, p.Name(), p.Imported().Path())
 			}
 		}
 	})
@@ -448,7 +476,7 @@ func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.
 		return
 	}
 
-	stack := snap.FindAST(old.Obj.Pos())
+	stack := snap.SyntaxAt(old.Obj.Pos())
 	var decl ast.Node
 	switch n := stack[2].(type) {
 	case *ast.GenDecl:
@@ -463,12 +491,12 @@ func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.
 	// Remove references to the target package itself.
 	// Insert references to the original package as needed.
 	// TODO: Something about import cycles.
+	pkg := snap.PackageAt(decl.Pos())
 	text := snap.Text(decl.Pos(), decl.End())
 	buf := edit.NewBuffer(text)
-	pkg := snap.Target().Types
 	refactor.InspectAST(decl, func(stack []ast.Node) {
 		if id, ok := stack[0].(*ast.Ident); ok {
-			obj := snap.Target().TypesInfo.Uses[id]
+			obj := pkg.TypesInfo.Uses[id]
 			if pn, ok := obj.(*types.PkgName); ok {
 				if pn.Imported().Path() == targetPkg.Types.Path() {
 					sel := stack[1].(*ast.SelectorExpr)
@@ -476,10 +504,10 @@ func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.
 				} else {
 					snap.NeedImport(dst, pn.Id(), pn.Imported().Path())
 				}
-			} else if obj != nil && obj.Parent() == pkg.Scope() {
+			} else if obj != nil && obj.Parent() == pkg.Types.Scope() {
 				off := int(id.Pos() - decl.Pos())
-				snap.NeedImport(dst, pkg.Name(), pkg.Path())
-				buf.Replace(off, off, pkg.Name()+".")
+				snap.NeedImport(dst, pkg.Types.Name(), pkg.Types.Path())
+				buf.Replace(off, off, pkg.Types.Name()+".")
 			}
 		}
 	})
@@ -487,6 +515,9 @@ func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.
 	// Move code.
 	snap.Edit(decl.Pos(), decl.End(), "")
 	snap.Edit(dst, dst, "\n"+buf.String())
+
+	// Update references to what was moved.
+	rewriteUses(snap, old, targetPkg.Types.Name()+"."+old.Name, nil)
 
 	// TODO: Delete unused imports at some point.
 }

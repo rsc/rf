@@ -1,0 +1,16 @@
+ex var i int; i*2 -> i<<1; i*5 -> i<<2+i
+-- x.go --
+package p
+
+var x, y int
+var _ = x*2 + y*5
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,4 +1,4 @@
+ package p
+
+ var x, y int
+-var _ = x*2 + y*5
++var _ = x<<1 + y<<2 + y
