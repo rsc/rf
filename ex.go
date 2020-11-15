@@ -226,6 +226,7 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 					// Pattern variable -> captured subexpression.
 					if xobj, ok := m.wildcardObj(id); ok {
 						replx := m.env[xobj.Name()]
+						// TODO: captured subexpression may need import fixes?
 						repl := string(snap.Text(replx.Pos(), replx.End()))
 						if needParen(replx, stack) {
 							repl = "(" + repl + ")"
@@ -276,7 +277,7 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 				if needParen(substX, stack) {
 					substText = "(" + substText + ")"
 				}
-				snap.Edit(stack[0].Pos(), stack[0].End(), substText)
+				snap.ReplaceNode(stack[0], substText)
 			}
 		})
 	})

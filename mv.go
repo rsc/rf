@@ -218,7 +218,7 @@ func rewriteDefn(snap *refactor.Snapshot, old *refactor.Item, new string) {
 		snap.ErrorAt(old.Obj.Pos(), "did not find definition - %v", types)
 		return
 	}
-	snap.Edit(id.Pos(), id.End(), new)
+	snap.ReplaceNode(id, new)
 }
 
 func rewriteUses(snap *refactor.Snapshot, old *refactor.Item, new string, checkPos posChecker) {
@@ -231,7 +231,7 @@ func rewriteUses(snap *refactor.Snapshot, old *refactor.Item, new string, checkP
 			if checkPos != nil {
 				checkPos(snap, stack)
 			}
-			snap.Edit(id.Pos(), id.End(), new)
+			snap.ReplaceNode(id, new)
 		})
 	})
 }
@@ -255,21 +255,21 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 		// Delete entire declaration.
 		// TODO: Doc comments too.
 		// TODO: Newline too.
-		snap.Edit(decl.Pos(), decl.End(), "")
+		snap.ReplaceNode(decl, "")
 		return
 	}
 
 	if len(spec.Names) == 1 {
-		snap.Edit(spec.Pos(), spec.End(), "")
+		snap.ReplaceNode(spec, "")
 		return
 	}
 
 	for i, id := range spec.Names {
 		if id.Pos() == old.Obj.Pos() {
 			if i == 0 {
-				snap.Edit(id.Pos(), spec.Names[i+1].Pos(), "")
+				snap.ReplaceAt(id.Pos(), spec.Names[i+1].Pos(), "")
 			} else {
-				snap.Edit(spec.Names[i-1].End(), id.End(), "")
+				snap.ReplaceAt(spec.Names[i-1].End(), id.End(), "")
 			}
 			// TODO: Deal with initializer spec.Values[i]
 			return
@@ -312,9 +312,9 @@ Loop:
 	}
 	if line(fields.Opening) == line(fields.Closing) ||
 		len(fields.List) > 0 && line(fields.List[len(fields.List)-1].End()) == line(fields.Closing) {
-		snap.Edit(fields.Closing, fields.Closing, "\n")
+		snap.InsertAt(fields.Closing, "\n")
 	}
-	snap.Edit(fields.Closing, fields.Closing, name+" "+typ.String()+"\n")
+	snap.InsertAt(fields.Closing, name+" "+typ.String()+"\n")
 }
 
 func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
@@ -322,14 +322,14 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 	// Insert name before receiver list.
 	stack := snap.SyntaxAt(method.Pos()) // FuncType Ident FuncDecl
 	decl := stack[2].(*ast.FuncDecl)
-	snap.Edit(decl.Recv.Opening, decl.Recv.Opening, " "+name)
+	snap.InsertAt(decl.Recv.Opening, " "+name)
 
 	// Drop ) MethodName( from declaration, replacing with comma if there are arguments.
 	sep := ""
 	if len(decl.Type.Params.List) > 0 {
 		sep = ", "
 	}
-	snap.Edit(decl.Recv.Closing, decl.Type.Params.Opening+1, sep)
+	snap.ReplaceAt(decl.Recv.Closing, decl.Type.Params.Opening+1, sep)
 
 	// If receiver is named but params are not, or vice versa,
 	// need to add _ to each name.
@@ -337,11 +337,11 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 		(len(decl.Recv.List[0].Names) == 0) != (len(decl.Type.Params.List[0].Names) == 0) {
 		if len(decl.Recv.List[0].Names) == 0 {
 			pos := decl.Recv.List[0].Type.Pos()
-			snap.Edit(pos, pos, "_ ")
+			snap.InsertAt(pos, "_ ")
 		} else {
 			for _, f := range decl.Type.Params.List {
 				pos := f.Type.Pos()
-				snap.Edit(pos, pos, "_ ")
+				snap.InsertAt(pos, "_ ")
 			}
 		}
 	}
@@ -388,18 +388,18 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 					snap.ErrorAt(id.Pos(), "cannot rewrite pointer method value (with value receiver method) to function")
 					return
 				}
-				snap.Edit(sel.Pos(), sel.End(), name)
+				snap.ReplaceNode(sel, name)
 				return
 			}
 
 			// Call of method expression?
 			if selType {
 				// T.M(rcvr, x) -> newname(rcvr, x).
-				snap.Edit(call.Pos(), call.Lparen, name)
+				snap.ReplaceAt(call.Pos(), call.Lparen, name)
 				if selPtr && !recvPtr { // (*T).M(rcvr, x) -> newname(*rcvr, x)
 					// There are no binary operators that can yield a pointer,
 					// so no possible need for parens around rcvr.
-					snap.Edit(call.Lparen+1, call.Lparen+1, "*")
+					snap.InsertAt(call.Lparen+1, "*")
 				}
 				return
 			}
@@ -407,20 +407,20 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 			// Call of method with real receiver.
 			// Turn x.M(y) into name(x, y).
 			// May need to turn x into &x or *x as well.
-			snap.Edit(sel.X.Pos(), sel.X.Pos(), name+"(")
-			snap.Edit(sel.X.End(), call.Lparen+1, "")
+			snap.InsertAt(sel.X.Pos(), name+"(")
+			snap.ReplaceAt(sel.X.End(), call.Lparen+1, "")
 			if len(call.Args) > 0 {
-				snap.Edit(call.Lparen+1, call.Lparen+1, ", ")
+				snap.InsertAt(call.Lparen+1, ", ")
 			}
 			if recvPtr && !selPtr {
 				// There are no binary operators that can yield an addressable expression,
 				// so no possible need for parens around x..
-				snap.Edit(sel.X.Pos(), sel.X.Pos(), "&")
+				snap.InsertAt(sel.X.Pos(), "&")
 			}
 			if selPtr && !recvPtr {
 				// There are no binary operators that can yield a pointer,
 				// so no possible need for parens around x.
-				snap.Edit(sel.X.Pos(), sel.X.Pos(), "*")
+				snap.InsertAt(sel.X.Pos(), "*")
 			}
 		})
 	})
@@ -467,8 +467,8 @@ func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
 
 	// Move code.
 	text := snap.Text(decl.Pos(), decl.End())
-	snap.Edit(decl.Pos(), decl.End(), "")
-	snap.Edit(dst, dst, "\n"+string(text))
+	snap.ReplaceNode(decl, "")
+	snap.InsertAt(dst, "\n"+string(text))
 
 	// TODO: Delete unused imports at some point.
 }
@@ -518,8 +518,8 @@ func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.
 	})
 
 	// Move code.
-	snap.Edit(decl.Pos(), decl.End(), "")
-	snap.Edit(dst, dst, "\n"+buf.String())
+	snap.ReplaceNode(decl, "")
+	snap.InsertAt(dst, "\n"+buf.String())
 
 	// Update references to what was moved.
 	rewriteUses(snap, old, targetPkg.Types.Name()+"."+old.Name, nil)
@@ -545,9 +545,9 @@ func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Pac
 	pos := file.Decls[0].Pos()
 	ed := edit.NewBuffer(snap.Text(pos, file.End()))
 	fixImports(snap, ed, pos, file.End(), targetFile.End())
-	snap.Edit(targetFile.End(), targetFile.End(), "\n"+ed.String())
+	snap.InsertAt(targetFile.End(), "\n"+ed.String())
 
-	snap.Edit(pos, file.End(), "")
+	snap.ReplaceAt(pos, file.End(), "")
 
 	// TODO update refs
 }

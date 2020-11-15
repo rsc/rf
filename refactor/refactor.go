@@ -87,7 +87,11 @@ func New(dir string, pkgs ...string) (*Refactor, error) {
 		return nil, fmt.Errorf("no matching packages")
 	}
 
+	var save []*packages.Package
 	for _, pkg := range list {
+		if strings.HasSuffix(pkg.ID, ".test") || strings.HasSuffix(pkg.ID, "]") {
+			continue
+		}
 		// pkg.Module should always be non-nil,
 		// but when working in $GOROOT it is not filled in for cmd
 		// TODO: Need to figure out whether it's not filled in
@@ -95,6 +99,7 @@ func New(dir string, pkgs ...string) (*Refactor, error) {
 		if pkg.Module != nil && !pkg.Module.Main {
 			return nil, fmt.Errorf("cannot refactor package %s outside current module", pkg.PkgPath)
 		}
+		save = append(save, pkg)
 	}
 
 	r := &Refactor{
@@ -103,7 +108,7 @@ func New(dir string, pkgs ...string) (*Refactor, error) {
 		dir:     dir,
 		modRoot: modRoot,
 		modPath: modPath,
-		targets: list,
+		targets: save,
 	}
 	return r, nil
 }
@@ -184,7 +189,7 @@ type Snapshot struct {
 	files   fileCache
 	targets []*packages.Package
 	pkgs    []*packages.Package
-	edits   map[string]*edit.Buffer
+	edits   map[string]*buffer
 	added   map[string][]string
 	errors  int
 }
@@ -273,7 +278,7 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		r:     r,
 		old:   base,
 		fset:  token.NewFileSet(),
-		edits: make(map[string]*edit.Buffer),
+		edits: make(map[string]*buffer),
 		added: make(map[string][]string),
 	}
 	if base != nil {
@@ -385,14 +390,22 @@ func (s *Snapshot) Position(pos token.Pos) token.Position {
 	return s.fset.Position(pos)
 }
 
-func (s *Snapshot) Edit(lo, hi token.Pos, repl string) {
+func (s *Snapshot) ReplaceAt(lo, hi token.Pos, repl string) {
 	plo := s.Position(lo)
-	phi := s.Position(hi)
 	file := plo.Filename
 	if s.edits[file] == nil {
-		s.edits[file] = edit.NewBuffer(s.files.cacheRead(file, nil))
+		text := s.files.cacheRead(file, nil)
+		s.edits[file] = newBufferAt(lo-token.Pos(plo.Offset), text)
 	}
-	s.edits[file].Replace(plo.Offset, phi.Offset, repl)
+	s.edits[file].Replace(lo, hi, repl)
+}
+
+func (s *Snapshot) InsertAt(pos token.Pos, repl string) {
+	s.ReplaceAt(pos, pos, repl)
+}
+
+func (s *Snapshot) ReplaceNode(n ast.Node, repl string) {
+	s.ReplaceAt(n.Pos(), n.End(), repl)
 }
 
 func (s *Snapshot) ForEachFile(f func(pkg *packages.Package, file *ast.File)) {
@@ -437,25 +450,28 @@ func (s *Snapshot) oldBytes(name string) []byte {
 	return s.files.cacheRead(name, nil)
 }
 
+func (s *Snapshot) modifiedBytes(name string) []byte {
+	if buf, ok := s.edits[name]; ok {
+		return buf.Bytes()
+	}
+	if text := s.files.cacheRead(name, nil); text != nil {
+		return text
+	}
+	return nil
+}
+
 func (s *Snapshot) Diff() ([]byte, error) {
 	var diffs []byte
 	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
 			name := s.File(file.Package)
-			var newBytes []byte
-			if buf, ok := s.edits[name]; ok {
-				newBytes = buf.Bytes()
-			} else {
-				if text := s.files.cacheRead(name, nil); text != nil {
-					newBytes = text
-				}
-			}
-			if newBytes == nil {
+			text := s.modifiedBytes(name)
+			if text == nil {
 				continue
 			}
 
 			rel, err := filepath.Rel(s.r.modRoot, name)
-			d, err := diff.Diff("old/"+rel, s.oldBytes(name), "new/"+rel, newBytes)
+			d, err := diff.Diff("old/"+rel, s.oldBytes(name), "new/"+rel, text)
 			if err != nil {
 				return nil, err
 			}
@@ -504,7 +520,7 @@ func (s *Snapshot) Gofmt() {
 			if err := format.Node(&out, fset, file); err != nil {
 				continue
 			}
-			s.edits[name] = edit.NewBuffer(out.Bytes())
+			s.edits[name] = newBufferAt(^token.Pos(0), out.Bytes())
 		}
 	}
 }
@@ -514,13 +530,12 @@ func (s *Snapshot) Write() error {
 	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
 			name := s.File(file.Package)
-			buf, ok := s.edits[name]
-			if !ok {
-				continue
-			}
-			if err := ioutil.WriteFile(name, buf.Bytes(), 0666); err != nil {
-				fmt.Fprintf(s.r.Stderr, "%s\n", err)
-				failed = true
+			text := s.modifiedBytes(name)
+			if text != nil {
+				if err := ioutil.WriteFile(name, text, 0666); err != nil {
+					fmt.Fprintf(s.r.Stderr, "%s\n", err)
+					failed = true
+				}
 			}
 		}
 	}
@@ -795,7 +810,7 @@ func (s *Snapshot) NeedImport(pos token.Pos, id, pkg string) {
 		ident = id + " "
 	}
 
-	s.Edit(file.Name.End(), file.Name.End(), "\nimport "+ident+strconv.Quote(pkg))
+	s.ReplaceAt(file.Name.End(), file.Name.End(), "\nimport "+ident+strconv.Quote(pkg))
 }
 
 func (s *Snapshot) FileByName(name string) (*packages.Package, *ast.File) {
@@ -821,4 +836,36 @@ func (s *Snapshot) PackageAt(pos token.Pos) *packages.Package {
 		}
 	}
 	return nil
+}
+
+// A buffer is a queue of edits to apply to a file text.
+// It's like edit.Buffer but uses token.Pos as coordinate space.
+type buffer struct {
+	pos token.Pos
+	end token.Pos
+	ed  *edit.Buffer
+}
+
+func newBufferAt(pos token.Pos, text []byte) *buffer {
+	return &buffer{pos: pos, end: pos + token.Pos(len(text)), ed: edit.NewBuffer(text)}
+}
+
+func (b *buffer) Bytes() []byte {
+	return b.ed.Bytes()
+}
+
+func (b *buffer) String() string {
+	return b.ed.String()
+}
+
+func (b *buffer) Delete(pos, end token.Pos) {
+	b.ed.Delete(int(pos-b.pos), int(end-b.end))
+}
+
+func (b *buffer) Insert(pos token.Pos, new string) {
+	b.ed.Insert(int(pos-b.pos), new)
+}
+
+func (b *buffer) Replace(pos, end token.Pos, new string) {
+	b.ed.Replace(int(pos-b.pos), int(end-b.pos), new)
 }
