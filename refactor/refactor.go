@@ -285,6 +285,7 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		for name, edit := range base.edits {
 			s.files.cacheRead(name, edit.Bytes())
 		}
+		base.Write() // overlay doesn't seem to work
 	}
 	cfg := &packages.Config{
 		Mode:      packages.NeedName | packages.NeedSyntax | mode,
@@ -292,7 +293,7 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		Tests:     true,
 		Fset:      s.fset,
 		ParseFile: s.files.ParseFile,
-		Overlay:   s.files.overlay(),
+		// Overlay:   s.files.overlay(),
 	}
 	pkgs, err := packages.Load(cfg, append([]string{"."}, extra...)...)
 	if err != nil {
@@ -631,7 +632,7 @@ func (s *Snapshot) Lookup(expr string) *Item {
 	}
 
 	name, rest, more := cut(expr, ".")
-	item := lookupTop(s.pkgs[0], name)
+	item := lookupInScope(s.pkgs[0].Types.Scope(), name)
 	if item == nil {
 		return nil
 	}
@@ -647,8 +648,8 @@ func (s *Snapshot) Lookup(expr string) *Item {
 	return item
 }
 
-func lookupTop(p *packages.Package, expr string) *Item {
-	obj := p.Types.Scope().Lookup(expr)
+func lookupInScope(scope *types.Scope, expr string) *Item {
+	obj := scope.Lookup(expr)
 	switch obj := obj.(type) {
 	default:
 		log.Fatalf("%s is a %T, unimplemented", expr, obj)
@@ -681,6 +682,11 @@ func lookupIn(p *packages.Package, outer *Item, name string) *Item {
 		}
 	case ItemFunc:
 		// Look for declaration inside function.
+		item := lookupInScope(outer.Obj.(*types.Func).Scope(), name)
+		if item != nil {
+			item.Outer = outer
+			return item
+		}
 	case ItemField:
 		return lookupType(p, outer, outer.Obj.Type(), name)
 	}

@@ -146,9 +146,9 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 		return
 	}
 
-	// Rename global var to new field in global var of type struct.
+	// Rename var (global or function-local) to new field in global var of type struct.
 	newTop := newOuter.Outermost()
-	if old.Outer == nil && old.Kind == refactor.ItemVar &&
+	if old.Kind == refactor.ItemVar && (old.Outer == nil || old.Outer.Kind == refactor.ItemFunc && old.Outer.Outer == nil) &&
 		newTop != nil && newTop.Kind == refactor.ItemVar &&
 		(newOuter.Kind == refactor.ItemVar || newOuter.Kind == refactor.ItemField) {
 		tvar := newOuter.Obj.(*types.Var)
@@ -193,8 +193,6 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 		return
 	}
 
-	// TODO: Rename variable in function to global.
-
 	// TODO: Rename global to variable in function.
 
 	snap.ErrorAt(token.NoPos, "unimplemented replacement: %v -> %v . %v", old, newOuter, newName)
@@ -226,8 +224,14 @@ func rewriteUses(snap *refactor.Snapshot, old *refactor.Item, new string, checkP
 		refactor.Walk(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
 			if !ok || pkg.TypesInfo.Uses[id] != old.Obj {
+				if len(stack) > 2 {
+					if _, ok := stack[1].(*ast.AssignStmt); ok && pkg.TypesInfo.Defs[id] == old.Obj {
+						goto OK
+					}
+				}
 				return
 			}
+		OK:
 			if checkPos != nil {
 				checkPos(snap, stack)
 			}
@@ -248,32 +252,45 @@ func StackTypes(list []ast.Node) string {
 func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 	stack := snap.SyntaxAt(old.Obj.Pos())
 	// stack is *ast.Ident *ast.ValueSpec *ast.GenDecl
-	spec := stack[1].(*ast.ValueSpec)
-	decl := stack[2].(*ast.GenDecl)
+	// or maybe *ast.Ident *ast.AssignStmt
+	switch stack[1].(type) {
+	case *ast.ValueSpec:
+		spec := stack[1].(*ast.ValueSpec)
+		decl := stack[2].(*ast.GenDecl)
 
-	if len(decl.Specs) == 1 && len(spec.Names) == 1 {
-		// Delete entire declaration.
-		// TODO: Doc comments too.
-		// TODO: Newline too.
-		snap.ReplaceNode(decl, "")
-		return
-	}
-
-	if len(spec.Names) == 1 {
-		snap.ReplaceNode(spec, "")
-		return
-	}
-
-	for i, id := range spec.Names {
-		if id.Pos() == old.Obj.Pos() {
-			if i == 0 {
-				snap.ReplaceAt(id.Pos(), spec.Names[i+1].Pos(), "")
-			} else {
-				snap.ReplaceAt(spec.Names[i-1].End(), id.End(), "")
-			}
-			// TODO: Deal with initializer spec.Values[i]
+		if len(decl.Specs) == 1 && len(spec.Names) == 1 {
+			// Delete entire declaration.
+			// TODO: Doc comments too.
+			// TODO: Newline too.
+			snap.ReplaceNode(decl, "")
 			return
 		}
+
+		if len(spec.Names) == 1 {
+			snap.ReplaceNode(spec, "")
+			return
+		}
+
+		for i, id := range spec.Names {
+			if id.Pos() == old.Obj.Pos() {
+				if i == 0 {
+					snap.ReplaceAt(id.Pos(), spec.Names[i+1].Pos(), "")
+				} else {
+					snap.ReplaceAt(spec.Names[i-1].End(), id.End(), "")
+				}
+				// TODO: Deal with initializer spec.Values[i]
+				return
+			}
+		}
+
+	case *ast.AssignStmt:
+		as := stack[1].(*ast.AssignStmt)
+		if len(as.Lhs) > 1 {
+			snap.ErrorAt(as.Pos(), "multiple decl not implemented")
+			return
+		}
+		snap.DeleteAt(as.TokPos, as.TokPos+1) // delete colon
+		return
 	}
 
 	snap.ErrorAt(old.Obj.Pos(), "could not find declaration to delete")
@@ -532,7 +549,7 @@ func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Pac
 		return
 	}
 
-	// TODO create file if needed
+	// TODO Allow creating new file.
 	targetDir := filepath.Dir(snap.File(targetPkg.Syntax[0].Package))
 	targetFilename := filepath.Join(targetDir, filepath.Base(filename))
 	targetPkg, targetFile := snap.FileByName(targetFilename)
@@ -541,15 +558,16 @@ func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Pac
 		return
 	}
 
-	// TODO full file text
+	// TODO: Work out better file text.
 	pos := file.Decls[0].Pos()
 	snap.ForceDeleteAt(pos, file.End())
 
+	// Rewrite text being moved to correct package references.
 	ed := edit.NewBuffer(snap.Text(pos, file.End()))
 	fixImports(snap, ed, pos, file.End(), targetFile.End())
 	snap.InsertAt(targetFile.End(), "\n"+ed.String())
 
-	// TODO update refs to decls
+	// Build list of objects being moved.
 	m := make(map[types.Object]*packages.Package)
 	defs := filePkg.TypesInfo.Defs
 	for _, d := range file.Decls {
@@ -587,6 +605,9 @@ func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Pac
 		}
 	}
 
+	// TODO: Check that the moves don't create import cycles.
+
+	// Update all references to point to new locations.
 	rewritePkgRefs(snap, m)
 }
 
