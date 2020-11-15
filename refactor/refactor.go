@@ -404,6 +404,20 @@ func (s *Snapshot) InsertAt(pos token.Pos, repl string) {
 	s.ReplaceAt(pos, pos, repl)
 }
 
+func (s *Snapshot) DeleteAt(pos, end token.Pos) {
+	s.ReplaceAt(pos, end, "")
+}
+
+func (s *Snapshot) ForceDeleteAt(pos, end token.Pos) {
+	posn := s.Position(pos)
+	file := posn.Filename
+	if s.edits[file] == nil {
+		text := s.files.cacheRead(file, nil)
+		s.edits[file] = newBufferAt(pos-token.Pos(posn.Offset), text)
+	}
+	s.edits[file].ForceDelete(pos, end)
+}
+
 func (s *Snapshot) ReplaceNode(n ast.Node, repl string) {
 	s.ReplaceAt(n.Pos(), n.End(), repl)
 }
@@ -859,7 +873,11 @@ func (b *buffer) String() string {
 }
 
 func (b *buffer) Delete(pos, end token.Pos) {
-	b.ed.Delete(int(pos-b.pos), int(end-b.end))
+	b.ed.Delete(int(pos-b.pos), int(end-b.pos))
+}
+
+func (b *buffer) ForceDelete(pos, end token.Pos) {
+	b.ed.ForceDelete(int(pos-b.pos), int(end-b.pos))
 }
 
 func (b *buffer) Insert(pos token.Pos, new string) {

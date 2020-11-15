@@ -21,6 +21,7 @@ type edit struct {
 	start int
 	end   int
 	new   string
+	force bool
 }
 
 // An edits is a list of edits that is sortable by start offset, breaking ties by end offset.
@@ -29,10 +30,19 @@ type edits []edit
 func (x edits) Len() int      { return len(x) }
 func (x edits) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
 func (x edits) Less(i, j int) bool {
+	// Earlier edits first.
 	if x[i].start != x[j].start {
 		return x[i].start < x[j].start
 	}
-	return x[i].end < x[j].end
+	// Insert before delete/replace.
+	if (x[i].end == x[i].start) != (x[j].end == x[j].start) {
+		return x[i].end == x[i].start
+	}
+	// Force delete before other delete/replace.
+	if x[i].force != x[j].force {
+		return x[i].force
+	}
+	return false
 }
 
 // NewBuffer returns a new buffer to accumulate changes to an initial data slice.
@@ -46,21 +56,28 @@ func (b *Buffer) Insert(pos int, new string) {
 	if pos < 0 || pos > len(b.old) {
 		panic("invalid edit position")
 	}
-	b.q = append(b.q, edit{pos, pos, new})
+	b.q = append(b.q, edit{start: pos, end: pos, new: new})
 }
 
 func (b *Buffer) Delete(start, end int) {
 	if end < start || start < 0 || end > len(b.old) {
 		panic("invalid edit position")
 	}
-	b.q = append(b.q, edit{start, end, ""})
+	b.q = append(b.q, edit{start: start, end: end, new: ""})
+}
+
+func (b *Buffer) ForceDelete(start, end int) {
+	if end < start || start < 0 || end > len(b.old) {
+		panic("invalid edit position")
+	}
+	b.q = append(b.q, edit{start: start, end: end, new: "", force: true})
 }
 
 func (b *Buffer) Replace(start, end int, new string) {
 	if end < start || start < 0 || end > len(b.old) {
 		panic("invalid edit position")
 	}
-	b.q = append(b.q, edit{start, end, new})
+	b.q = append(b.q, edit{start: start, end: end, new: new})
 }
 
 // Bytes returns a new byte slice containing the original data
@@ -74,12 +91,18 @@ func (b *Buffer) Bytes() []byte {
 
 	var new []byte
 	offset := 0
-	for i, e := range b.q {
+	for i := 0; i < len(b.q); i++ {
+		e := b.q[i]
 		if e.start < offset {
 			e0 := b.q[i-1]
 			panic(fmt.Sprintf("overlapping edits: [%d,%d)->%q, [%d,%d)->%q", e0.start, e0.end, e0.new, e.start, e.end, e.new))
 		}
 		new = append(new, b.old[offset:e.start]...)
+		if e.force {
+			for i+1 < len(b.q) && !b.q[i+1].force && b.q[i+1].start < e.end {
+				i++
+			}
+		}
 		offset = e.end
 		new = append(new, e.new...)
 	}

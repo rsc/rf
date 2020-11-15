@@ -526,7 +526,7 @@ func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.
 }
 
 func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Package) {
-	_, file := snap.FileByName(filename)
+	filePkg, file := snap.FileByName(filename)
 	if file == nil {
 		snap.ErrorAt(token.NoPos, "cannot find package containing %s", filename)
 		return
@@ -535,7 +535,7 @@ func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Pac
 	// TODO create file if needed
 	targetDir := filepath.Dir(snap.File(targetPkg.Syntax[0].Package))
 	targetFilename := filepath.Join(targetDir, filepath.Base(filename))
-	_, targetFile := snap.FileByName(targetFilename)
+	targetPkg, targetFile := snap.FileByName(targetFilename)
 	if targetFile == nil {
 		snap.ErrorAt(token.NoPos, "cannot find target file %s", targetFilename)
 		return
@@ -543,13 +543,51 @@ func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Pac
 
 	// TODO full file text
 	pos := file.Decls[0].Pos()
+	snap.ForceDeleteAt(pos, file.End())
+
 	ed := edit.NewBuffer(snap.Text(pos, file.End()))
 	fixImports(snap, ed, pos, file.End(), targetFile.End())
 	snap.InsertAt(targetFile.End(), "\n"+ed.String())
 
-	snap.ReplaceAt(pos, file.End(), "")
+	// TODO update refs to decls
+	m := make(map[types.Object]*packages.Package)
+	defs := filePkg.TypesInfo.Defs
+	for _, d := range file.Decls {
+		switch d := d.(type) {
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch spec := spec.(type) {
+				case *ast.ImportSpec:
+					panic("imports")
+				case *ast.ValueSpec:
+					for _, id := range spec.Names {
+						obj := defs[id]
+						if obj == nil {
+							panic("no obj for var/const")
+						}
+						m[obj] = targetPkg
+					}
+				case *ast.TypeSpec:
+					obj := defs[spec.Name]
+					if obj == nil {
+						panic("no obj for type")
+					}
+					m[obj] = targetPkg
+				}
+			}
+		case *ast.FuncDecl:
+			if d.Recv != nil {
+				continue
+			}
+			obj := defs[d.Name]
+			if obj == nil {
+				panic("no obj for func")
+			}
+			m[obj] = targetPkg
+		}
+	}
 
-	// TODO update refs
+	rewritePkgRefs(snap, m)
 }
 
 // FixImports rewrites the buffer src, which corresponds to [srcPos, srcEnd),
@@ -606,4 +644,44 @@ func fixImports(snap *refactor.Snapshot, src *edit.Buffer, srcPos, srcEnd, dstPo
 			})
 		}
 	}
+}
+
+func rewritePkgRefs(snap *refactor.Snapshot, m map[types.Object]*packages.Package) {
+	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
+		refactor.Walk(file, func(stack []ast.Node) {
+			id, ok := stack[0].(*ast.Ident)
+			if !ok {
+				return
+			}
+			obj := pkg.TypesInfo.Uses[id]
+			newPkg := m[obj]
+			if newPkg == nil {
+				return
+			}
+
+			// obj is moving to a new package.
+			if sel, ok := stack[1].(*ast.SelectorExpr); ok {
+				// obj is already otherPkg.Name; update to newPkg.Name.
+				if newPkg == pkg {
+					// Delete the no-longer-needed package qualifier.
+					if snap.LookupAt(id.Name, id.Pos()) != nil {
+						snap.ErrorAt(id.Pos(), "%s is shadowed at new unqualified use", id.Name)
+					}
+					snap.DeleteAt(sel.Pos(), id.Pos())
+				} else {
+					snap.NeedImport(id.Pos(), newPkg.Types.Name(), newPkg.Types.Path())
+					snap.ReplaceNode(sel.X, newPkg.Types.Name())
+				}
+			} else if newPkg == pkg {
+				// obj is moving to pkg but is already referred to in pkg without a qualifier.
+				// Can happen if pkg imports the old location with a dot import.
+				// Can't be shadowed or the reference wouldn't be to obj.
+				// Do nothing.
+			} else {
+				// obj is moving to a new package and needs a qualified import.
+				snap.NeedImport(id.Pos(), newPkg.Types.Name(), newPkg.Types.Path())
+				snap.InsertAt(id.Pos(), newPkg.Types.Name()+".")
+			}
+		})
+	})
 }
