@@ -409,6 +409,20 @@ func (s *Snapshot) ForEachFile(f func(pkg *packages.Package, file *ast.File)) {
 	}
 }
 
+func (s *Snapshot) ForEachTargetFile(f func(pkg *packages.Package, file *ast.File)) {
+	seen := make(map[string]bool)
+	for _, p := range s.targets {
+		for _, file := range p.Syntax {
+			filename := s.Position(file.Package).Filename
+			if seen[filename] {
+				continue
+			}
+			seen[filename] = true
+			f(p, file)
+		}
+	}
+}
+
 func (s *Snapshot) File(pos token.Pos) string {
 	return s.fset.Position(pos).Filename
 }
@@ -683,6 +697,10 @@ func cutLast(s, sep string) (before, after string, ok bool) {
 }
 
 func Walk(n ast.Node, f func(stack []ast.Node)) {
+	WalkRange(n, 0, token.Pos(^uint(0)>>1), f)
+}
+
+func WalkRange(n ast.Node, lo, hi token.Pos, f func(stack []ast.Node)) {
 	var stack []ast.Node
 	var stackPos int
 
@@ -690,6 +708,9 @@ func Walk(n ast.Node, f func(stack []ast.Node)) {
 		if n == nil {
 			stackPos++
 			return true
+		}
+		if n.End() < lo || hi <= n.Pos() {
+			return false
 		}
 		if stackPos == 0 {
 			old := len(stack)
@@ -777,11 +798,11 @@ func (s *Snapshot) NeedImport(pos token.Pos, id, pkg string) {
 	s.Edit(file.Name.End(), file.Name.End(), "\nimport "+ident+strconv.Quote(pkg))
 }
 
-func (s *Snapshot) TargetFileByName(name string) (*packages.Package, *ast.File) {
+func (s *Snapshot) FileByName(name string) (*packages.Package, *ast.File) {
 	if !filepath.IsAbs(name) {
 		name = filepath.Join(s.r.dir, name)
 	}
-	for _, p := range s.targets {
+	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
 			if s.Position(file.Package).Filename == name {
 				return p, file

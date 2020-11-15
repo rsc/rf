@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -82,10 +83,14 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 			mvCode(snap, srcs[0], dst.Name)
 			return
 		}
-		if len(srcs) == 1 && srcs[0].Outer == nil && srcs[0].Kind != refactor.ItemFile && dst.Kind == refactor.ItemDir {
+		if len(srcs) == 1 && srcs[0].Outer == nil && dst.Kind == refactor.ItemDir {
 			for _, pkg := range snap.Packages() {
 				if pkg.PkgPath == dst.Name {
-					mvCodePkg(snap, srcs[0], pkg)
+					if srcs[0].Kind == refactor.ItemFile {
+						mvFilePkg(snap, srcs[0].Name, pkg)
+					} else {
+						mvCodePkg(snap, srcs[0], pkg)
+					}
 					return
 				}
 			}
@@ -432,7 +437,7 @@ func nonParen(stack []ast.Node, i int) int {
 
 func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
 	// Find target file.
-	_, file := snap.TargetFileByName(targetFile)
+	_, file := snap.FileByName(targetFile)
 	if file == nil {
 		snap.ErrorAt(token.NoPos, "cannot find file %s in target packages", targetFile)
 		return
@@ -518,6 +523,87 @@ func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.
 
 	// Update references to what was moved.
 	rewriteUses(snap, old, targetPkg.Types.Name()+"."+old.Name, nil)
+}
 
-	// TODO: Delete unused imports at some point.
+func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Package) {
+	_, file := snap.FileByName(filename)
+	if file == nil {
+		snap.ErrorAt(token.NoPos, "cannot find package containing %s", filename)
+		return
+	}
+
+	// TODO create file if needed
+	targetDir := filepath.Dir(snap.File(targetPkg.Syntax[0].Package))
+	targetFilename := filepath.Join(targetDir, filepath.Base(filename))
+	_, targetFile := snap.FileByName(targetFilename)
+	if targetFile == nil {
+		snap.ErrorAt(token.NoPos, "cannot find target file %s", targetFilename)
+		return
+	}
+
+	// TODO full file text
+	pos := file.Decls[0].Pos()
+	ed := edit.NewBuffer(snap.Text(pos, file.End()))
+	fixImports(snap, ed, pos, file.End(), targetFile.End())
+	snap.Edit(targetFile.End(), targetFile.End(), "\n"+ed.String())
+
+	snap.Edit(pos, file.End(), "")
+
+	// TODO update refs
+}
+
+// FixImports rewrites the buffer src, which corresponds to [srcPos, srcEnd),
+// to be ready for insertion at dstPos.
+func fixImports(snap *refactor.Snapshot, src *edit.Buffer, srcPos, srcEnd, dstPos token.Pos) {
+	dstPkg := snap.PackageAt(dstPos)
+	srcPkg := snap.PackageAt(srcPos)
+
+	for _, file := range srcPkg.Syntax {
+		if file.Pos() <= srcPos && srcPos < file.End() {
+			refactor.WalkRange(file, srcPos, srcEnd, func(stack []ast.Node) {
+				id, ok := stack[0].(*ast.Ident)
+				if !ok {
+					return
+				}
+
+				obj := srcPkg.TypesInfo.Uses[id]
+				if obj == nil {
+					return
+				}
+
+				// If this ID is p.ID where p is a package,
+				// make sure we have the import available,
+				// or if this is package p, remove the p.
+				if sel, ok := stack[1].(*ast.SelectorExpr); ok {
+					if xid, ok := sel.X.(*ast.Ident); ok {
+						if pid, ok := srcPkg.TypesInfo.Uses[xid].(*types.PkgName); ok {
+							if pid.Imported() == dstPkg.Types {
+								// Remove package qualifier.
+								if snap.LookupAt(id.Name, dstPos) != obj {
+									snap.ErrorAt(dstPos, "%s is shadowed at destination", id.Name)
+								}
+								src.Replace(int(sel.Pos()-srcPos), int(sel.Pos()-srcPos), "")
+							} else {
+								snap.NeedImport(dstPos, xid.Name, pid.Imported().Path())
+							}
+						}
+					}
+					return
+				}
+
+				// Otherwise, an ID not in a selector.
+				// If it refers to a global in the original package, add an import if needed.
+				if obj.Parent() == srcPkg.Types.Scope() {
+					if dstPkg == srcPkg {
+						if snap.LookupAt(id.Name, dstPos) != obj {
+							snap.ErrorAt(dstPos, "%s is shadowed at destination", id.Name)
+						}
+					} else {
+						snap.NeedImport(dstPos, srcPkg.Types.Name(), srcPkg.Types.Path())
+						src.Replace(int(id.Pos()-srcPos), int(id.Pos()-srcPos), srcPkg.Types.Name()+".")
+					}
+				}
+			})
+		}
+	}
 }

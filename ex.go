@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/edit"
 	"rsc.io/rf/refactor"
 )
@@ -207,80 +208,78 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 		env:     make(map[string]ast.Expr),
 	}
 
-	for _, target := range snap.Targets() {
-		for _, file := range target.Syntax {
-			refactor.Walk(file, func(stack []ast.Node) {
-				if m.match(pattern, stack[0]) {
-					matchPos := stack[0].Pos()
-					// Substitute pattern variable values from match into substitution text.
-					// Because these values are coming from the same source location
-					// as they will eventually be placed into, import references and the
-					// like are all OK and don't need updating.
-					buf := edit.NewBuffer([]byte(code[subst.Pos()-codePos : subst.End()-codePos]))
-					refactor.Walk(subst, func(stack []ast.Node) {
-						id, ok := stack[0].(*ast.Ident)
-						if !ok {
-							return
-						}
+	snap.ForEachTargetFile(func(target *packages.Package, file *ast.File) {
+		refactor.Walk(file, func(stack []ast.Node) {
+			if m.match(pattern, stack[0]) {
+				matchPos := stack[0].Pos()
+				// Substitute pattern variable values from match into substitution text.
+				// Because these values are coming from the same source location
+				// as they will eventually be placed into, import references and the
+				// like are all OK and don't need updating.
+				buf := edit.NewBuffer([]byte(code[subst.Pos()-codePos : subst.End()-codePos]))
+				refactor.Walk(subst, func(stack []ast.Node) {
+					id, ok := stack[0].(*ast.Ident)
+					if !ok {
+						return
+					}
 
-						// Pattern variable -> captured subexpression.
-						if xobj, ok := m.wildcardObj(id); ok {
-							replx := m.env[xobj.Name()]
-							repl := string(snap.Text(replx.Pos(), replx.End()))
-							if needParen(replx, stack) {
-								repl = "(" + repl + ")"
-							}
-							buf.Replace(int(id.Pos()-subst.Pos()), int(id.End()-subst.Pos()), repl)
-							return
+					// Pattern variable -> captured subexpression.
+					if xobj, ok := m.wildcardObj(id); ok {
+						replx := m.env[xobj.Name()]
+						repl := string(snap.Text(replx.Pos(), replx.End()))
+						if needParen(replx, stack) {
+							repl = "(" + repl + ")"
 						}
+						buf.Replace(int(id.Pos()-subst.Pos()), int(id.End()-subst.Pos()), repl)
+						return
+					}
 
-						// If this ID is p.ID where p is a package,
-						// make sure we have the import available,
-						// or if this is package p, remove the p.
-						if sel, ok := stack[1].(*ast.SelectorExpr); ok {
-							if xid, ok := sel.X.(*ast.Ident); ok {
-								if pid, ok := info.Uses[xid].(*types.PkgName); ok {
-									snap.NeedImport(matchPos, pid.Name(), pid.Imported().Path())
-								}
-							}
-							return
-						}
-
-						// Is this ID referring to a global in the typesPkg? If so:
-						// - Is the typesPkg the target package? Then make sure the global isn't shadowed.
-						// - Otherwise, make sure the target has an import, and qualify the identifier.
-						obj := info.Uses[id]
-						if obj == nil {
-							panic("NO USES")
-						}
-						if obj != nil && typesPkg != nil && obj.Parent() == typesPkg.Scope() {
-							if typesPkg == target.Types {
-								if snap.LookupAt(id.Name, stack[0].Pos()) != obj {
-									snap.ErrorAt(matchPos, "%s is shadowed in replacement", id.Name)
-								}
-							} else {
-								snap.NeedImport(matchPos, typesPkg.Name(), typesPkg.Path())
-								buf.Replace(int(id.Pos()-subst.Pos()), int(id.Pos()-subst.Pos()), typesPkg.Name()+".")
+					// If this ID is p.ID where p is a package,
+					// make sure we have the import available,
+					// or if this is package p, remove the p.
+					if sel, ok := stack[1].(*ast.SelectorExpr); ok {
+						if xid, ok := sel.X.(*ast.Ident); ok {
+							if pid, ok := info.Uses[xid].(*types.PkgName); ok {
+								snap.NeedImport(matchPos, xid.Name, pid.Imported().Path())
 							}
 						}
-					})
+						return
+					}
 
-					// Now substitute completed substitution text into actual program.
-					substX := subst
-					if id, ok := substX.(*ast.Ident); ok {
-						if xobj, ok := m.wildcardObj(id); ok {
-							substX = m.env[xobj.Name()]
+					// Is this ID referring to a global in the typesPkg? If so:
+					// - Is the typesPkg the target package? Then make sure the global isn't shadowed.
+					// - Otherwise, make sure the target has an import, and qualify the identifier.
+					obj := info.Uses[id]
+					if obj == nil {
+						panic("NO USES")
+					}
+					if obj != nil && typesPkg != nil && obj.Parent() == typesPkg.Scope() {
+						if typesPkg == target.Types {
+							if snap.LookupAt(id.Name, stack[0].Pos()) != obj {
+								snap.ErrorAt(matchPos, "%s is shadowed in replacement", id.Name)
+							}
+						} else {
+							snap.NeedImport(matchPos, typesPkg.Name(), typesPkg.Path())
+							buf.Replace(int(id.Pos()-subst.Pos()), int(id.Pos()-subst.Pos()), typesPkg.Name()+".")
 						}
 					}
-					substText := buf.String()
-					if needParen(substX, stack) {
-						substText = "(" + substText + ")"
+				})
+
+				// Now substitute completed substitution text into actual program.
+				substX := subst
+				if id, ok := substX.(*ast.Ident); ok {
+					if xobj, ok := m.wildcardObj(id); ok {
+						substX = m.env[xobj.Name()]
 					}
-					snap.Edit(stack[0].Pos(), stack[0].End(), substText)
 				}
-			})
-		}
-	}
+				substText := buf.String()
+				if needParen(substX, stack) {
+					substText = "(" + substText + ")"
+				}
+				snap.Edit(stack[0].Pos(), stack[0].End(), substText)
+			}
+		})
+	})
 	return
 }
 

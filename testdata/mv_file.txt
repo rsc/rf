@@ -1,0 +1,15 @@
+mv x.go m/q
+-- x.go --
+package m
+
+var X int
+-- y.go --
+package m
+
+var Y = X
+-- q/q.go --
+package q
+-- q/x.go --
+package q
+-- stdout --
+XXX
