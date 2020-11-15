@@ -16,7 +16,7 @@ import (
 
 func deleteUnusedImports(fset *token.FileSet, file *ast.File) {
 	used := make(map[string]bool)
-	InspectAST(file, func(stack []ast.Node) {
+	Walk(file, func(stack []ast.Node) {
 		if id, ok := stack[0].(*ast.Ident); ok && id.Obj == nil {
 			used[id.Name] = true
 		}

@@ -218,7 +218,7 @@ func rewriteDefn(snap *refactor.Snapshot, old *refactor.Item, new string) {
 
 func rewriteUses(snap *refactor.Snapshot, old *refactor.Item, new string, checkPos posChecker) {
 	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
-		refactor.InspectAST(file, func(stack []ast.Node) {
+		refactor.Walk(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
 			if !ok || pkg.TypesInfo.Uses[id] != old.Obj {
 				return
@@ -348,7 +348,7 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 	_, recvPtr := recvType.(*types.Pointer)
 
 	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
-		refactor.InspectAST(file, func(stack []ast.Node) {
+		refactor.Walk(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
 			if !ok || pkg.TypesInfo.Uses[id] != method {
 				return
@@ -452,7 +452,7 @@ func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
 	}
 
 	// Make sure target file has the necessary imports.
-	refactor.InspectAST(decl, func(stack []ast.Node) {
+	refactor.Walk(decl, func(stack []ast.Node) {
 		if id, ok := stack[0].(*ast.Ident); ok {
 			if p, ok := srcPkg.TypesInfo.Uses[id].(*types.PkgName); ok {
 				snap.NeedImport(dst, p.Name(), p.Imported().Path())
@@ -494,7 +494,7 @@ func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.
 	pkg := snap.PackageAt(decl.Pos())
 	text := snap.Text(decl.Pos(), decl.End())
 	buf := edit.NewBuffer(text)
-	refactor.InspectAST(decl, func(stack []ast.Node) {
+	refactor.Walk(decl, func(stack []ast.Node) {
 		if id, ok := stack[0].(*ast.Ident); ok {
 			obj := pkg.TypesInfo.Uses[id]
 			if pn, ok := obj.(*types.PkgName); ok {

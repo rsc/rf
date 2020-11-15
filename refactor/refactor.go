@@ -682,7 +682,7 @@ func cutLast(s, sep string) (before, after string, ok bool) {
 	return s, "", false
 }
 
-func InspectAST(n ast.Node, f func(stack []ast.Node)) {
+func Walk(n ast.Node, f func(stack []ast.Node)) {
 	var stack []ast.Node
 	var stackPos int
 

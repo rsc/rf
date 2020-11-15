@@ -209,7 +209,7 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 
 	for _, target := range snap.Targets() {
 		for _, file := range target.Syntax {
-			refactor.InspectAST(file, func(stack []ast.Node) {
+			refactor.Walk(file, func(stack []ast.Node) {
 				if m.match(pattern, stack[0]) {
 					matchPos := stack[0].Pos()
 					// Substitute pattern variable values from match into substitution text.
@@ -217,7 +217,7 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 					// as they will eventually be placed into, import references and the
 					// like are all OK and don't need updating.
 					buf := edit.NewBuffer([]byte(code[subst.Pos()-codePos : subst.End()-codePos]))
-					refactor.InspectAST(subst, func(stack []ast.Node) {
+					refactor.Walk(subst, func(stack []ast.Node) {
 						id, ok := stack[0].(*ast.Ident)
 						if !ok {
 							return
