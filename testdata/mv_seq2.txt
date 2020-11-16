@@ -1,0 +1,44 @@
+mv A S.A
+mv C S.C
+mv S s.go
+-- x.go --
+package m
+
+var S struct{}
+var A = 1
+var C = 2
+-- q/q.go --
+package q
+
+import "m"
+
+var _ = m.A
+-- stdout --
+diff old/s.go new/s.go
+--- old/s.go
++++ new/s.go
+@@ -0,0 +1,6 @@
++package m
++
++var S struct {
++	A int
++	C int
++}
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,5 +1 @@
+ package m
+-
+-var S struct{}
+-var A = 1
+-var C = 2
+diff old/q/q.go new/q/q.go
+--- old/q/q.go
++++ new/q/q.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-var _ = m.A
++var _ = m.S.A

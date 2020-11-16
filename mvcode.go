@@ -188,7 +188,7 @@ func moveCode(snap *refactor.Snapshot,
 			srcSplit = srcFile.Decls[i].End()
 		}
 	}
-	srcStart, srcEOF := fileRange(snap, srcFile.Package)
+	srcStart, srcEOF := snap.FileRange(srcFile.Package)
 	if srcPos == token.NoPos {
 		srcPos = srcSplit
 		srcEnd = srcEOF
@@ -206,7 +206,7 @@ func moveCode(snap *refactor.Snapshot,
 		text = text[:srcFile.Name.Pos()-srcStart] + dstPkg.Types.Name() + text[srcFile.Name.End()-srcStart:]
 		dstFile = snap.CreateFile(dstPkg, dst.Name, text)
 	}
-	_, dstPos := fileRange(snap, dstFile.Package)
+	_, dstPos := snap.FileRange(dstFile.Package)
 
 	snap.InsertAt(dstPos, "\n\n"+
 		transplant(snap, string(snap.Text(srcPos, srcEnd)), srcPos, dstPos, moves))
@@ -227,7 +227,7 @@ func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*packages.Pa
 			}
 			obj := pkg.TypesInfo.Uses[id]
 			newPkg := moves[obj]
-			if newPkg == nil {
+			if newPkg == nil || newPkg.Types == obj.Pkg() {
 				return
 			}
 
@@ -236,7 +236,7 @@ func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*packages.Pa
 				// obj is already otherPkg.Name; update to newPkg.Name.
 				if newPkg == pkg {
 					// Delete the no-longer-needed package qualifier.
-					if snap.LookupAt(id.Name, id.Pos()) != nil {
+					if xobj := snap.LookupAt(id.Name, id.Pos()); xobj != nil && xobj != obj {
 						snap.ErrorAt(id.Pos(), "%s is shadowed at new unqualified use", id.Name)
 					}
 					snap.DeleteAt(sel.Pos(), id.Pos())
@@ -258,12 +258,6 @@ func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*packages.Pa
 	})
 }
 
-func fileRange(snap *refactor.Snapshot, pos token.Pos) (start, end token.Pos) {
-	tf := snap.Fset().File(pos)
-	start = token.Pos(tf.Base())
-	return start, start + token.Pos(tf.Size())
-}
-
 func isImportDecl(decl ast.Decl) bool {
 	d, ok := decl.(*ast.GenDecl)
 	return ok && d.Tok == token.IMPORT
@@ -280,7 +274,7 @@ func findFile(snap *refactor.Snapshot, pkg *packages.Package, name string) *ast.
 
 func codeRange(snap *refactor.Snapshot, obj types.Object) (pos, end token.Pos) {
 	_, srcFile := snap.FileAt(obj.Pos())
-	startFile, endFile := fileRange(snap, obj.Pos())
+	startFile, endFile := snap.FileRange(obj.Pos())
 	text := snap.Text(startFile, endFile)
 	pos = srcFile.Name.End()
 	if int(pos-startFile) < len(text) && text[pos-startFile] == '\n' {

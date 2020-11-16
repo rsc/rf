@@ -556,52 +556,70 @@ func (s *Snapshot) currentBytes(name string) []byte {
 }
 
 func (s *Snapshot) Diff() ([]byte, error) {
-	var diffs []byte
-	for _, p := range s.pkgs {
-		for _, file := range p.Syntax {
-			name := s.File(file.Package)
-			new := s.currentBytes(name)
-			if new == nil {
-				continue
-			}
-			old := s.oldBytes(name)
-			if bytes.Equal(old, new) {
-				continue
-			}
-			rel, err := filepath.Rel(s.r.modRoot, name)
-			d, err := diff.Diff("old/"+rel, old, "new/"+rel, new)
-			if err != nil {
-				return nil, err
-			}
-			diffs = append(diffs, d...)
+	var names []string
+	for name := range s.files.data {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		di, dj := filepath.Dir(names[i]), filepath.Dir(names[j])
+		if di != dj {
+			return di < dj
 		}
+		return names[i] < names[j]
+	})
+
+	var diffs []byte
+	for _, name := range names {
+		new := s.currentBytes(name)
+		if new == nil {
+			continue
+		}
+		old := s.oldBytes(name)
+		if bytes.Equal(old, new) {
+			continue
+		}
+		rel, err := filepath.Rel(s.r.modRoot, name)
+		d, err := diff.Diff("old/"+rel, old, "new/"+rel, new)
+		if err != nil {
+			return nil, err
+		}
+		diffs = append(diffs, d...)
 	}
 	return diffs, nil
 }
 
 func (s *Snapshot) Write() error {
+	var names []string
+	for name := range s.files.data {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		di, dj := filepath.Dir(names[i]), filepath.Dir(names[j])
+		if di != dj {
+			return di < dj
+		}
+		return names[i] < names[j]
+	})
+
 	failed := false
-	for _, p := range s.pkgs {
-		for _, file := range p.Syntax {
-			name := s.File(file.Package)
-			new := s.currentBytes(name)
-			if new == nil {
-				continue
-			}
-			old := s.oldBytes(name)
-			if bytes.Equal(old, new) {
-				continue
-			}
-			var err error
-			if s.deleted[name] {
-				err = os.Remove(name)
-			} else {
-				err = ioutil.WriteFile(name, new, 0666)
-			}
-			if err != nil {
-				fmt.Fprintf(s.r.Stderr, "%s\n", err)
-				failed = true
-			}
+	for _, name := range names {
+		new := s.currentBytes(name)
+		if new == nil {
+			continue
+		}
+		old := s.oldBytes(name)
+		if bytes.Equal(old, new) {
+			continue
+		}
+		var err error
+		if s.deleted[name] {
+			err = os.Remove(name)
+		} else {
+			err = ioutil.WriteFile(name, new, 0666)
+		}
+		if err != nil {
+			fmt.Fprintf(s.r.Stderr, "%s\n", err)
+			failed = true
 		}
 	}
 	if failed {
@@ -670,8 +688,10 @@ func (s *Snapshot) LookupAt(name string, pos token.Pos) types.Object {
 type Item struct {
 	Kind  ItemKind
 	Name  string
-	Obj   types.Object
 	Outer *Item
+	Obj   types.Object
+	Pos   token.Pos
+	End   token.Pos
 }
 
 func (i *Item) Outermost() *Item {
@@ -693,6 +713,7 @@ const (
 	ItemFunc
 	ItemField
 	ItemMethod
+	ItemPos
 )
 
 func (k ItemKind) String() string {
@@ -713,12 +734,37 @@ func (k ItemKind) String() string {
 		return "field"
 	case ItemMethod:
 		return "method"
+	case ItemPos:
+		return "text"
 	}
 	return "???"
 }
 
 func (s *Snapshot) Lookup(expr string) *Item {
 	// Special cases for directory, file, as in "mv Thing ../newpkg".
+	if expr, addr, ok := cut(expr, ":"); ok {
+		item := s.Lookup(expr)
+		if item == nil {
+			return nil
+		}
+		if item.Kind == ItemFile {
+			_, f := s.FileByName(item.Name)
+			base, eof := s.FileRange(f.Package)
+			text := s.Text(base, eof)
+			lo, hi, err := addrToByteRange(addr, 0, text)
+			if err != nil {
+				s.ErrorAt(token.NoPos, "cannot evaluate address %s: %v", addr, err)
+				panic("bad addr")
+			}
+			return &Item{
+				Kind:  ItemPos,
+				Outer: item,
+				Pos:   base + token.Pos(lo),
+				End:   base + token.Pos(hi),
+			}
+		}
+		panic("bad addr")
+	}
 	if strings.Contains(expr, "/") {
 		return &Item{Kind: ItemDir, Name: expr}
 	}
@@ -741,6 +787,12 @@ func (s *Snapshot) Lookup(expr string) *Item {
 		item.Name = item.Outer.Name + "." + name
 	}
 	return item
+}
+
+func (s *Snapshot) FileRange(pos token.Pos) (start, end token.Pos) {
+	tf := s.Fset().File(pos)
+	start = token.Pos(tf.Base())
+	return start, start + token.Pos(tf.Size())
 }
 
 func lookupInScope(scope *types.Scope, expr string) *Item {
@@ -1023,7 +1075,14 @@ func (s *Snapshot) addImportList(file string, list []newImport) {
 		// Add new block to first (non-C) import, if any.
 		var buf bytes.Buffer
 		kind := -1
-		for _, need := range needs[nil] {
+		all := needs[nil]
+		sort.Slice(all, func(i, j int) bool {
+			if ki, kj := pathKind(all[i].pkg.Path()), pathKind(all[j].pkg.Path()); ki != kj {
+				return ki < kj
+			}
+			return all[i].pkg.Path() < all[j].pkg.Path()
+		})
+		for _, need := range all {
 			if k := pathKind(need.pkg.Path()); k != kind {
 				buf.WriteString("\n")
 				kind = k

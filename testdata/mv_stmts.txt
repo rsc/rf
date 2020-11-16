@@ -1,0 +1,35 @@
+mv x.go:5,6 G
+-- x.go --
+package p
+
+func F() {
+	x := 1
+	A(x)
+	y := B()
+	_ = y
+}
+
+func A(x int) {}
+func B() int { return 0 }
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,10 +2,15 @@
+
+ func F() {
+ 	x := 1
++	y := G(x)
++	_ = y
++}
++
++func G(x int) int {
+ 	A(x)
+ 	y := B()
+-	_ = y
++	return y
+ }
+
+ func A(x int) {}
+-func B() int { return 0 }
++func B() int  { return 0 }

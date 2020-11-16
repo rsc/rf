@@ -1,0 +1,49 @@
+mv x.go:9,14 G
+-- x.go --
+package p
+
+import "m/q"
+
+var X = 1
+
+func F() {
+	x := 1
+	A(x+X+q.Q)
+	var z int
+	for _, y := range []int{B()} {
+		y = y+1
+		z += y
+	}
+}
+
+func A(x int) {}
+func B() int { return 0 }
+-- q/q.go --
+package q
+
+const Q = 1
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -6,13 +6,17 @@
+
+ func F() {
+ 	x := 1
+-	A(x+X+q.Q)
++	G(x)
++}
++
++func G(x int) {
++	A(x + X + q.Q)
+ 	var z int
+ 	for _, y := range []int{B()} {
+-		y = y+1
++		y = y + 1
+ 		z += y
+ 	}
+ }
+
+ func A(x int) {}
+-func B() int { return 0 }
++func B() int  { return 0 }

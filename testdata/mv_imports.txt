@@ -1,0 +1,73 @@
+mv x.go example.com/q
+-- x.go --
+package p
+
+import (
+	"fmt"
+	"bytes"
+	"reflect"
+	"example.com/a"
+	"example.com/b"
+	"example.com/c"
+	"example.com/d"
+)
+
+func F() string {
+	return a.S + fmt.Sprint(1) + b.S + bytes.NewBuffer(nil).String() + c.S + reflect.ValueOf(0).String() + d.S
+}
+-- go.mod --
+module example.com
+-- a/a.go --
+package a
+const S = "hello"
+-- b/b.go --
+package b
+const S = "hello"
+-- c/c.go --
+package c
+const S = "hello"
+-- d/d.go --
+package d
+const S = "hello"
+-- q/q.go --
+package q
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,15 +0,0 @@
+-package p
+-
+-import (
+-	"fmt"
+-	"bytes"
+-	"reflect"
+-	"example.com/a"
+-	"example.com/b"
+-	"example.com/c"
+-	"example.com/d"
+-)
+-
+-func F() string {
+-	return a.S + fmt.Sprint(1) + b.S + bytes.NewBuffer(nil).String() + c.S + reflect.ValueOf(0).String() + d.S
+-}
+diff old/q/x.go new/q/x.go
+--- old/q/x.go
++++ new/q/x.go
+@@ -0,0 +1,16 @@
++package q
++
++import (
++	"bytes"
++	"fmt"
++	"reflect"
++
++	"example.com/a"
++	"example.com/b"
++	"example.com/c"
++	"example.com/d"
++)
++
++func F() string {
++	return a.S + fmt.Sprint(1) + b.S + bytes.NewBuffer(nil).String() + c.S + reflect.ValueOf(0).String() + d.S
++}

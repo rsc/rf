@@ -135,6 +135,11 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 		newName = newPath
 	}
 
+	if old.Kind == refactor.ItemPos && newOuter == nil {
+		mvStmt(snap, old, newName)
+		return
+	}
+
 	// Check that newName is a valid identifier.
 	// (Arbitrary syntax would make simple string search for dots invalid, among other problems.)
 	if !isGoIdent.MatchString(newName) {
@@ -191,11 +196,12 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 			}
 
 			if newItem == nil {
-				addStructField(snap, structPos, newName, old.Obj.Type())
+				addStructField(snap, structPos, newName, old.Obj.Type().String())
 			}
 			removeDecl(snap, old)
 			rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
 			exp = token.IsExported(old.Name)
+			println(exp, old.Name)
 			return
 		}
 	}
@@ -336,7 +342,7 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 	snap.ErrorAt(old.Obj.Pos(), "could not find declaration to delete")
 }
 
-func addStructField(snap *refactor.Snapshot, structPos token.Pos, name string, typ types.Type) {
+func addStructField(snap *refactor.Snapshot, structPos token.Pos, name string, typ string) {
 	stack := snap.SyntaxAt(structPos)
 
 	var xtyp ast.Expr
@@ -371,7 +377,7 @@ Loop:
 		len(fields.List) > 0 && line(fields.List[len(fields.List)-1].End()) == line(fields.Closing) {
 		snap.InsertAt(fields.Closing, "\n")
 	}
-	snap.InsertAt(fields.Closing, name+" "+typ.String()+"\n")
+	snap.InsertAt(fields.Closing, name+" "+typ+"\n")
 }
 
 func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {

@@ -39,14 +39,16 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	rf.ShowDiff = *showDiff
 	if err := run(rf, script); err != nil {
 		log.Fatal(err)
 	}
 }
 
 var cmds = map[string]func(*refactor.Snapshot, string) ([]string, bool){
-	"mv": cmdMv,
-	"ex": cmdEx,
+	"add": cmdAdd,
+	"ex":  cmdEx,
+	"mv":  cmdMv,
 }
 
 type loader interface {
@@ -62,6 +64,12 @@ func run(rf *refactor.Refactor, script string) error {
 		var line string
 		line, text, _ = cut(text, "\n")
 		line = strings.TrimSpace(line)
+		for strings.HasSuffix(line, `\`) && text != "" {
+			var l string
+			l, text, _ = cut(text, "\n")
+			line = line[:len(line)-1] + " " + l
+			line = strings.TrimSpace(line)
+		}
 		cmd, args, _ := cutAny(line, " \t")
 		if cmd == "" {
 			continue
