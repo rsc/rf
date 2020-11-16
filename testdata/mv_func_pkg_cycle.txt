@@ -35,15 +35,13 @@ diff old/x.go new/x.go
 -
 -var _ = X()
 +var _ = q.X()
-diff old/q/q.go new/q/q.go
---- old/q/q.go
-+++ new/q/q.go
-@@ -1,3 +1,9 @@
- package q
-
-+import p "m"
+diff old/q/x.go new/q/x.go
+--- old/q/x.go
++++ new/q/x.go
+@@ -0,0 +1,7 @@
++package q
 +
- var Q int
++import "m"
 +
 +func X() int {
 +	return Q + p.Y

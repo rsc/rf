@@ -1,0 +1,39 @@
+mv X Y.Z
+-- x.go --
+package m
+
+var X, X2 int
+var _ = X
+var Y struct {
+	W int
+	Z int
+}
+-- p/x.go --
+package p
+
+import "m"
+
+var _ = m.X
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +1,7 @@
+ package m
+
+-var X, X2 int
+-var _ = X
++var X2 int
++var _ = Y.Z
+ var Y struct {
+ 	W int
+ 	Z int
+diff old/p/x.go new/p/x.go
+--- old/p/x.go
++++ new/p/x.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-var _ = m.X
++var _ = m.Y.Z

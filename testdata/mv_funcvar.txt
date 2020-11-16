@@ -1,0 +1,28 @@
+mv F.x S.X
+-- x.go --
+package m
+
+var S struct {
+}
+
+func F() {
+	x := 123
+	_ = x
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,9 +1,10 @@
+ package m
+
+ var S struct {
++	X int
+ }
+
+ func F() {
+-	x := 123
+-	_ = x
++	S.X = 123
++	_ = S.X
+ }

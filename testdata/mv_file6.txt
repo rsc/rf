@@ -1,0 +1,57 @@
+mv F G f.go
+-- go.mod --
+module example.com/m
+-- x.go --
+package m
+
+import (
+	"example.com/m/q"
+	"fmt"
+	"strings"
+)
+
+// G is a great function.
+func G() int { fmt.Println(strings.TrimSpace("G")); return q.Q }
+
+// F is only fair.
+func F() int { return 0 }
+-- q/q.go --
+package q
+
+const Q = 1
+-- stdout --
+diff old/f.go new/f.go
+--- old/f.go
++++ new/f.go
+@@ -0,0 +1,14 @@
++package m
++
++import (
++	"fmt"
++	"strings"
++
++	"example.com/m/q"
++)
++
++// F is only fair.
++func F() int { return 0 }
++
++// G is a great function.
++func G() int { fmt.Println(strings.TrimSpace("G")); return q.Q }
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,13 +1 @@
+ package m
+-
+-import (
+-	"example.com/m/q"
+-	"fmt"
+-	"strings"
+-)
+-
+-// G is a great function.
+-func G() int { fmt.Println(strings.TrimSpace("G")); return q.Q }
+-
+-// F is only fair.
+-func F() int { return 0 }

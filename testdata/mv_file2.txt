@@ -1,0 +1,24 @@
+mv F G f.go
+-- x.go --
+package m
+
+func G() int { return 0 }
+func F() int { return 0 }
+-- stdout --
+diff old/f.go new/f.go
+--- old/f.go
++++ new/f.go
+@@ -0,0 +1,5 @@
++package m
++
++func F() int { return 0 }
++
++func G() int { return 0 }
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,4 +1 @@
+ package m
+-
+-func G() int { return 0 }
+-func F() int { return 0 }

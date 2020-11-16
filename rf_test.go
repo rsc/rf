@@ -27,6 +27,7 @@ func TestRun(t *testing.T) {
 
 	for _, file := range files {
 		t.Run(filepath.Base(file), func(t *testing.T) {
+			t.Log(file)
 			ar, err := txtar.ParseFile(file)
 			if err != nil {
 				t.Fatal(err)

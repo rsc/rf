@@ -241,7 +241,7 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 					if sel, ok := stack[1].(*ast.SelectorExpr); ok {
 						if xid, ok := sel.X.(*ast.Ident); ok {
 							if pid, ok := info.Uses[xid].(*types.PkgName); ok {
-								snap.NeedImport(matchPos, xid.Name, pid.Imported().Path())
+								snap.NeedImport(matchPos, xid.Name, pid.Imported())
 							}
 						}
 						return
@@ -260,7 +260,7 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 								snap.ErrorAt(matchPos, "%s is shadowed in replacement", id.Name)
 							}
 						} else {
-							snap.NeedImport(matchPos, typesPkg.Name(), typesPkg.Path())
+							snap.NeedImport(matchPos, typesPkg.Name(), typesPkg)
 							buf.Replace(int(id.Pos()-subst.Pos()), int(id.Pos()-subst.Pos()), typesPkg.Name()+".")
 						}
 					}

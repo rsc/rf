@@ -18,9 +18,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
-	"strconv"
+	"sort"
 	"strings"
 	"sync"
 
@@ -44,7 +43,11 @@ type Refactor struct {
 // New returns a new refactoring,
 // editing the package in the given directory (usually ".").
 func New(dir string, pkgs ...string) (*Refactor, error) {
-	dir, err := filepath.EvalSymlinks(dir)
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	dir, err = filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +119,7 @@ func New(dir string, pkgs ...string) (*Refactor, error) {
 func (r *Refactor) Importers(snap *Snapshot) ([]string, error) {
 	var overlay map[string][]byte
 	if snap != nil {
-		overlay = snap.files.overlay()
+		overlay = snap.overlay()
 	}
 
 	cfg := &packages.Config{
@@ -189,8 +192,11 @@ type Snapshot struct {
 	files   fileCache
 	targets []*packages.Package
 	pkgs    []*packages.Package
-	edits   map[string]*buffer
-	added   map[string][]string
+	edits   map[string]*Buffer
+	added   map[string][]newImport
+	deleted map[string]bool
+	created map[string]bool
+	imports map[string]*types.Package
 	errors  int
 }
 
@@ -232,9 +238,35 @@ type fileCache struct {
 	data map[string][]byte
 }
 
+func (fc *fileCache) copy(c *fileCache) {
+	// Assume dst -> src lock order is OK.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.data == nil {
+		fc.data = make(map[string][]byte)
+	}
+	for name, data := range c.data {
+		fc.data[name] = data
+	}
+}
+
+func (fc *fileCache) write(name string, text []byte) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+
+	if fc.data == nil {
+		fc.data = make(map[string][]byte)
+	}
+	fc.data[name] = text
+}
+
 func (fc *fileCache) cacheRead(name string, src []byte) []byte {
 	fc.mu.Lock()
-	if fc.data[name] == nil {
+	defer fc.mu.Unlock()
+
+	if _, ok := fc.data[name]; !ok {
 		if fc.data == nil {
 			fc.data = make(map[string][]byte)
 		}
@@ -242,7 +274,6 @@ func (fc *fileCache) cacheRead(name string, src []byte) []byte {
 	} else {
 		src = fc.data[name]
 	}
-	fc.mu.Unlock()
 	return src
 }
 
@@ -275,17 +306,20 @@ func (s *Snapshot) Load(extra ...string) (*Snapshot, error) {
 
 func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) (*Snapshot, error) {
 	s := &Snapshot{
-		r:     r,
-		old:   base,
-		fset:  token.NewFileSet(),
-		edits: make(map[string]*buffer),
-		added: make(map[string][]string),
+		r:       r,
+		old:     base,
+		fset:    token.NewFileSet(),
+		edits:   make(map[string]*Buffer),
+		added:   make(map[string][]newImport),
+		deleted: make(map[string]bool),
+		created: make(map[string]bool),
+		imports: make(map[string]*types.Package),
 	}
 	if base != nil {
+		s.files.copy(&base.files)
 		for name, edit := range base.edits {
-			s.files.cacheRead(name, edit.Bytes())
+			s.files.write(name, edit.Bytes())
 		}
-		base.Write() // overlay doesn't seem to work
 	}
 	cfg := &packages.Config{
 		Mode:      packages.NeedName | packages.NeedSyntax | mode,
@@ -293,11 +327,18 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		Tests:     true,
 		Fset:      s.fset,
 		ParseFile: s.files.ParseFile,
-		// Overlay:   s.files.overlay(),
+		Overlay:   s.overlay(),
 	}
 	pkgs, err := packages.Load(cfg, append([]string{"."}, extra...)...)
 	if err != nil {
 		return nil, err
+	}
+
+	for _, p := range pkgs {
+		s.imports[p.Types.Path()] = p.Types
+		for _, tp := range p.Types.Imports() {
+			s.imports[tp.Path()] = tp
+		}
 	}
 
 	failed := false
@@ -396,7 +437,7 @@ func (s *Snapshot) ReplaceAt(lo, hi token.Pos, repl string) {
 	file := plo.Filename
 	if s.edits[file] == nil {
 		text := s.files.cacheRead(file, nil)
-		s.edits[file] = newBufferAt(lo-token.Pos(plo.Offset), text)
+		s.edits[file] = NewBufferAt(lo-token.Pos(plo.Offset), text)
 	}
 	s.edits[file].Replace(lo, hi, repl)
 }
@@ -409,12 +450,45 @@ func (s *Snapshot) DeleteAt(pos, end token.Pos) {
 	s.ReplaceAt(pos, end, "")
 }
 
+func (s *Snapshot) DeleteFile(pos token.Pos) {
+	_, file := s.FileAt(pos)
+
+	tf := s.fset.File(pos)
+	pos = token.Pos(tf.Base())
+	end := pos + token.Pos(tf.Size())
+	s.ForceDeleteAt(pos, end)
+	s.InsertAt(pos, "package "+file.Name.Name+"\n") // dummy file to satisfy future compiles
+	s.deleted[s.Position(pos).Filename] = true
+}
+
+func pkgDir(pkg *packages.Package) string {
+	return filepath.Dir(pkg.Fset.Position(pkg.Syntax[0].Package).Filename)
+}
+
+func (s *Snapshot) CreateFile(pkg *packages.Package, name, text string) *ast.File {
+	if text == "" {
+		text = "package " + pkg.Types.Name() + "\n"
+	}
+	filename := filepath.Join(pkgDir(pkg), name)
+	s.created[filename] = true
+	s.files.write(filename, []byte(text))
+	f, err := parser.ParseFile(s.fset, filename, text, parser.ParseComments)
+	if err != nil {
+		panic("CreateFile parse: " + err.Error())
+	}
+	pkg.Syntax = append(pkg.Syntax, f)
+	sort.Slice(pkg.Syntax, func(i, j int) bool {
+		return pkg.Fset.Position(pkg.Syntax[i].Package).Filename < pkg.Fset.Position(pkg.Syntax[j].Package).Filename
+	})
+	return f
+}
+
 func (s *Snapshot) ForceDeleteAt(pos, end token.Pos) {
 	posn := s.Position(pos)
 	file := posn.Filename
 	if s.edits[file] == nil {
 		text := s.files.cacheRead(file, nil)
-		s.edits[file] = newBufferAt(pos-token.Pos(posn.Offset), text)
+		s.edits[file] = NewBufferAt(pos-token.Pos(posn.Offset), text)
 	}
 	s.edits[file].ForceDelete(pos, end)
 }
@@ -456,6 +530,9 @@ func (s *Snapshot) File(pos token.Pos) string {
 }
 
 func (s *Snapshot) oldBytes(name string) []byte {
+	if s.created[name] {
+		return nil
+	}
 	if s.old != nil {
 		b := s.old.oldBytes(name)
 		if b != nil {
@@ -465,7 +542,10 @@ func (s *Snapshot) oldBytes(name string) []byte {
 	return s.files.cacheRead(name, nil)
 }
 
-func (s *Snapshot) modifiedBytes(name string) []byte {
+func (s *Snapshot) currentBytes(name string) []byte {
+	if s.deleted[name] {
+		return []byte{}
+	}
 	if buf, ok := s.edits[name]; ok {
 		return buf.Bytes()
 	}
@@ -480,13 +560,16 @@ func (s *Snapshot) Diff() ([]byte, error) {
 	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
 			name := s.File(file.Package)
-			text := s.modifiedBytes(name)
-			if text == nil {
+			new := s.currentBytes(name)
+			if new == nil {
 				continue
 			}
-
+			old := s.oldBytes(name)
+			if bytes.Equal(old, new) {
+				continue
+			}
 			rel, err := filepath.Rel(s.r.modRoot, name)
-			d, err := diff.Diff("old/"+rel, s.oldBytes(name), "new/"+rel, text)
+			d, err := diff.Diff("old/"+rel, old, "new/"+rel, new)
 			if err != nil {
 				return nil, err
 			}
@@ -494,6 +577,37 @@ func (s *Snapshot) Diff() ([]byte, error) {
 		}
 	}
 	return diffs, nil
+}
+
+func (s *Snapshot) Write() error {
+	failed := false
+	for _, p := range s.pkgs {
+		for _, file := range p.Syntax {
+			name := s.File(file.Package)
+			new := s.currentBytes(name)
+			if new == nil {
+				continue
+			}
+			old := s.oldBytes(name)
+			if bytes.Equal(old, new) {
+				continue
+			}
+			var err error
+			if s.deleted[name] {
+				err = os.Remove(name)
+			} else {
+				err = ioutil.WriteFile(name, new, 0666)
+			}
+			if err != nil {
+				fmt.Fprintf(s.r.Stderr, "%s\n", err)
+				failed = true
+			}
+		}
+	}
+	if failed {
+		return fmt.Errorf("errors writing files")
+	}
+	return nil
 }
 
 func (s *Snapshot) Modified() []string {
@@ -517,6 +631,7 @@ func (s *Snapshot) Modified() []string {
 }
 
 func (s *Snapshot) Gofmt() {
+	s.addImports()
 	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
 			name := s.File(file.Package)
@@ -529,35 +644,15 @@ func (s *Snapshot) Gofmt() {
 			if err != nil {
 				continue
 			}
-			deleteUnusedImports(fset, file)
+			deleteUnusedImports(s, fset, file)
 
 			var out bytes.Buffer
 			if err := format.Node(&out, fset, file); err != nil {
 				continue
 			}
-			s.edits[name] = newBufferAt(^token.Pos(0), out.Bytes())
+			s.edits[name] = NewBufferAt(^token.Pos(0), out.Bytes())
 		}
 	}
-}
-
-func (s *Snapshot) Write() error {
-	failed := false
-	for _, p := range s.pkgs {
-		for _, file := range p.Syntax {
-			name := s.File(file.Package)
-			text := s.modifiedBytes(name)
-			if text != nil {
-				if err := ioutil.WriteFile(name, text, 0666); err != nil {
-					fmt.Fprintf(s.r.Stderr, "%s\n", err)
-					failed = true
-				}
-			}
-		}
-	}
-	if failed {
-		return fmt.Errorf("errors writing files")
-	}
-	return nil
 }
 
 func (s *Snapshot) LookupAt(name string, pos token.Pos) types.Object {
@@ -676,7 +771,13 @@ func lookupIn(p *packages.Package, outer *Item, name string) *Item {
 		return lookupType(p, outer, outer.Obj.Type(), name)
 	case ItemVar:
 		// If unnamed struct or interface, look in type.
-		switch typ := outer.Obj.Type().Underlying().(type) {
+		typ := outer.Obj.Type().Underlying()
+		if ptr, ok := typ.(*types.Pointer); ok {
+			typ = ptr.Elem().Underlying()
+		}
+		switch typ := typ.(type) {
+		default:
+			fmt.Printf("LOOKUP IN %T\n", typ)
 		case *types.Struct, *types.Interface:
 			return lookupType(p, outer, typ, name)
 		}
@@ -765,10 +866,11 @@ func WalkRange(n ast.Node, lo, hi token.Pos, f func(stack []ast.Node)) {
 	}
 }
 
-func (s *Snapshot) findFile(pos token.Pos) (*packages.Package, *ast.File) {
+func (s *Snapshot) FileAt(pos token.Pos) (*packages.Package, *ast.File) {
 	for _, p := range s.pkgs {
 		for _, file := range p.Syntax {
-			if file.Pos() <= pos && pos <= file.End() {
+			tfile := s.fset.File(file.Pos())
+			if tfile.Base() <= int(pos) && int(pos) <= tfile.Base()+tfile.Size() {
 				return p, file
 			}
 		}
@@ -777,7 +879,7 @@ func (s *Snapshot) findFile(pos token.Pos) (*packages.Package, *ast.File) {
 }
 
 func (s *Snapshot) SyntaxAt(pos token.Pos) []ast.Node {
-	_, file := s.findFile(pos)
+	_, file := s.FileAt(pos)
 	if file == nil {
 		return nil
 	}
@@ -796,41 +898,196 @@ func (s *Snapshot) SyntaxAt(pos token.Pos) []ast.Node {
 	return stack
 }
 
-func (s *Snapshot) NeedImport(pos token.Pos, id, pkg string) {
-	_, file := s.findFile(pos)
+type newImport struct {
+	id  string
+	pkg *types.Package
+}
+
+func (s *Snapshot) NeedImport(pos token.Pos, id string, pkg *types.Package) string {
+	_, file := s.FileAt(pos)
 	if file == nil {
 		fmt.Println(s.Position(pos))
 		panic("no file")
 	}
 
 	for _, imp := range file.Imports {
-		if importPath(imp) == pkg {
+		if importPath(imp) == pkg.Path() {
 			name := importName(imp)
 			if name == "" {
-				name = path.Base(pkg)
+				name = pkg.Name()
 			}
-			if id == name {
-				return
+			if name == id || id == "" {
+				// TODO check scope
+				return name
 			}
 		}
 	}
 
+	if id == "" {
+		id = pkg.Name()
+	}
 	filename := s.Position(file.Package).Filename
 	added := s.added[filename]
-	key := id + " " + pkg
+	key := newImport{id, pkg}
 	for _, p := range added {
 		if p == key {
-			return
+			return id
 		}
 	}
 	s.added[filename] = append(s.added[filename], key)
+	return id
+}
 
-	ident := ""
-	if id != path.Base(pkg) {
-		ident = id + " "
+func (s *Snapshot) addImports() {
+	for file, list := range s.added {
+		s.addImportList(file, list)
+	}
+}
+
+func (s *Snapshot) addImportList(file string, list []newImport) {
+	_, f := s.FileByName(file)
+	imps := f.Decls
+	for i, d := range f.Decls {
+		if d, ok := d.(*ast.GenDecl); !ok || d.Tok != token.IMPORT {
+			imps = f.Decls[:i]
+			break
+		}
 	}
 
-	s.ReplaceAt(file.Name.End(), file.Name.End(), "\nimport "+ident+strconv.Quote(pkg))
+	// Assign each import to an import statement.
+	needs := make(map[*ast.ImportSpec][]newImport)
+	impOf := make(map[*ast.ImportSpec]*ast.GenDecl)
+	var firstImp *ast.GenDecl
+	for _, need := range list {
+		// Find an import decl to add to.
+		// Same logic as go fix.
+		// Find an import decl to add to.
+		var (
+			bestMatch = -1
+			bestSpec  *ast.ImportSpec
+		)
+		for i := range imps {
+			imp := imps[i].(*ast.GenDecl)
+			// Do not add to import "C", to avoid disrupting the
+			// association with its doc comment, breaking cgo.
+			if declImports(imp, "C") {
+				continue
+			}
+			if firstImp == nil {
+				firstImp = imp
+			}
+
+			// Compute longest shared prefix with imports in this block.
+			for j := range imp.Specs {
+				spec := imp.Specs[j].(*ast.ImportSpec)
+				impOf[spec] = imp
+				n := matchLen(importPath(spec), need.pkg.Path())
+				if n > bestMatch {
+					bestMatch = n
+					bestSpec = spec
+				}
+			}
+		}
+		needs[bestSpec] = append(needs[bestSpec], need)
+	}
+
+	makeBlock := func(imp *ast.GenDecl) {
+		if imp.Lparen == token.NoPos {
+			imp.Lparen = imp.TokPos + token.Pos(len("import"))
+			s.InsertAt(imp.Lparen, "(")
+			imp.Rparen = imp.End()
+			s.InsertAt(imp.Rparen+1, ")") // TODO: skip over comment; the +1 is to avoid conflict with the InsertAt in needs[nil] below
+		}
+	}
+	// Add imports near each target spec.
+	for i := range imps {
+		imp := imps[i].(*ast.GenDecl)
+		for j := range imp.Specs {
+			spec := imp.Specs[j].(*ast.ImportSpec)
+			if needs[spec] == nil {
+				continue
+			}
+			makeBlock(impOf[spec])
+			for _, need := range needs[spec] {
+				id := need.id
+				if id == need.pkg.Name() {
+					id = ""
+				}
+				s.InsertAt(spec.Pos(), fmt.Sprintf("%s %q\n", id, need.pkg))
+			}
+		}
+	}
+
+	if needs[nil] != nil {
+		// Imports we didn't know what to do with.
+		// Add new block to first (non-C) import, if any.
+		var buf bytes.Buffer
+		kind := -1
+		for _, need := range needs[nil] {
+			if k := pathKind(need.pkg.Path()); k != kind {
+				buf.WriteString("\n")
+				kind = k
+			}
+			id := need.id
+			if id == need.pkg.Name() {
+				id = ""
+			}
+			fmt.Fprintf(&buf, "%s %q\n", id, need.pkg.Path())
+		}
+		imp := firstImp
+		if imp != nil {
+			makeBlock(imp)
+			s.InsertAt(imp.Rparen, buf.String())
+		} else {
+			pos := f.Name.End()
+			if len(imps) > 0 {
+				pos = imps[len(imps)-1].End()
+			}
+			if len(needs[nil]) == 1 {
+				s.InsertAt(pos, "\nimport "+buf.String()[1:])
+			} else {
+				s.InsertAt(pos, "\nimport ("+buf.String()+")")
+			}
+		}
+	}
+}
+
+// declImports reports whether gen contains an import of path.
+func declImports(gen *ast.GenDecl, path string) bool {
+	if gen.Tok != token.IMPORT {
+		return false
+	}
+	for _, spec := range gen.Specs {
+		impspec := spec.(*ast.ImportSpec)
+		if importPath(impspec) == path {
+			return true
+		}
+	}
+	return false
+}
+
+// matchLen returns the length of the longest prefix shared by x and y.
+func matchLen(x, y string) int {
+	if pathKind(x) != pathKind(y) {
+		return -1
+	}
+
+	i := 0
+	for i < len(x) && i < len(y) && x[i] == y[i] {
+		i++
+	}
+	return i
+}
+
+func pathKind(x string) int {
+	first, _, _ := cut(x, "/")
+	if strings.Contains(first, ".") {
+		return 2
+	}
+	if first == "cmd" {
+		return 1
+	}
+	return 0
 }
 
 func (s *Snapshot) FileByName(name string) (*packages.Package, *ast.File) {
@@ -848,48 +1105,42 @@ func (s *Snapshot) FileByName(name string) (*packages.Package, *ast.File) {
 }
 
 func (s *Snapshot) PackageAt(pos token.Pos) *packages.Package {
-	for _, p := range s.targets {
-		for _, file := range p.Syntax {
-			if file.Pos() <= pos && pos <= file.End() {
-				return p
-			}
-		}
-	}
-	return nil
+	pkg, _ := s.FileAt(pos)
+	return pkg
 }
 
 // A buffer is a queue of edits to apply to a file text.
 // It's like edit.Buffer but uses token.Pos as coordinate space.
-type buffer struct {
+type Buffer struct {
 	pos token.Pos
 	end token.Pos
 	ed  *edit.Buffer
 }
 
-func newBufferAt(pos token.Pos, text []byte) *buffer {
-	return &buffer{pos: pos, end: pos + token.Pos(len(text)), ed: edit.NewBuffer(text)}
+func NewBufferAt(pos token.Pos, text []byte) *Buffer {
+	return &Buffer{pos: pos, end: pos + token.Pos(len(text)), ed: edit.NewBuffer(text)}
 }
 
-func (b *buffer) Bytes() []byte {
+func (b *Buffer) Bytes() []byte {
 	return b.ed.Bytes()
 }
 
-func (b *buffer) String() string {
+func (b *Buffer) String() string {
 	return b.ed.String()
 }
 
-func (b *buffer) Delete(pos, end token.Pos) {
+func (b *Buffer) Delete(pos, end token.Pos) {
 	b.ed.Delete(int(pos-b.pos), int(end-b.pos))
 }
 
-func (b *buffer) ForceDelete(pos, end token.Pos) {
+func (b *Buffer) ForceDelete(pos, end token.Pos) {
 	b.ed.ForceDelete(int(pos-b.pos), int(end-b.pos))
 }
 
-func (b *buffer) Insert(pos token.Pos, new string) {
+func (b *Buffer) Insert(pos token.Pos, new string) {
 	b.ed.Insert(int(pos-b.pos), new)
 }
 
-func (b *buffer) Replace(pos, end token.Pos, new string) {
+func (b *Buffer) Replace(pos, end token.Pos, new string) {
 	b.ed.Replace(int(pos-b.pos), int(end-b.pos), new)
 }

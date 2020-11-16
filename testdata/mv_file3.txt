@@ -1,0 +1,34 @@
+mv x.go f.go
+-- x.go --
+package m
+
+// G is a great function.
+func G() int { return 0 }
+
+// F is only fair.
+func F() int { return 0 }
+-- f.go --
+package m
+-- stdout --
+diff old/f.go new/f.go
+--- old/f.go
++++ new/f.go
+@@ -1 +1,7 @@
+ package m
++
++// G is a great function.
++func G() int { return 0 }
++
++// F is only fair.
++func F() int { return 0 }
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +0,0 @@
+-package m
+-
+-// G is a great function.
+-func G() int { return 0 }
+-
+-// F is only fair.
+-func F() int { return 0 }

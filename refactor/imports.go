@@ -10,21 +10,27 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
-	"path"
 	"strconv"
 )
 
-func deleteUnusedImports(fset *token.FileSet, file *ast.File) {
+func deleteUnusedImports(s *Snapshot, fset *token.FileSet, file *ast.File) {
 	used := make(map[string]bool)
 	Walk(file, func(stack []ast.Node) {
 		if id, ok := stack[0].(*ast.Ident); ok && id.Obj == nil {
+			if _, ok := stack[1].(*ast.SelectorExpr); !ok {
+				return
+			}
 			used[id.Name] = true
 		}
 	})
 
 	deleteImports(fset, file, func(name, pkg string) bool {
 		if name == "" {
-			name = path.Base(pkg)
+			p := s.imports[pkg]
+			if p == nil {
+				panic("NO IMPORT: " + pkg)
+			}
+			name = p.Name()
 		}
 		return !used[name]
 	})

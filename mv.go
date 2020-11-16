@@ -9,12 +9,11 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"path/filepath"
+	"path"
 	"reflect"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
-	"rsc.io/rf/edit"
 	"rsc.io/rf/refactor"
 )
 
@@ -66,6 +65,35 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 
 	srcs, dst := items[:len(items)-1], items[len(items)-1]
 	if dst != nil && (dst.Kind == refactor.ItemDir || dst.Kind == refactor.ItemFile) {
+		var dstPkg *packages.Package
+		if dst.Kind == refactor.ItemDir {
+			for _, pkg := range snap.Packages() {
+				if pkg.PkgPath == dst.Name {
+					dstPkg = pkg
+					break
+				}
+			}
+			if dstPkg == nil {
+				return []string{dst.Name}, false
+			}
+		} else {
+			if !strings.Contains(dst.Name, "/") {
+				dstPkg = snap.Targets()[0] // TODO
+			} else {
+				pkgPath := path.Dir(dst.Name)
+				for _, pkg := range snap.Packages() {
+					if pkg.PkgPath == pkgPath {
+						dstPkg = pkg
+						break
+					}
+				}
+				if dstPkg == nil {
+					return []string{dst.Name}, false
+				}
+				dst.Name = path.Base(dst.Name)
+			}
+		}
+
 		for _, item := range srcs {
 			if item.Outer == nil && item.Kind != refactor.ItemDir {
 				// ok
@@ -75,27 +103,16 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 				// ok
 				continue
 			}
-			snap.ErrorAt(token.NoPos, "cannot move %s to directory %s", item.Kind, dst.Name)
+			what := "directory"
+			if dst.Kind == refactor.ItemFile {
+				what = "file"
+			}
+			snap.ErrorAt(token.NoPos, "cannot move %s to %s %s", item.Kind, what, dst.Name)
 			return
 		}
 
-		if len(srcs) == 1 && srcs[0].Outer == nil && srcs[0].Kind != refactor.ItemFile && dst.Kind == refactor.ItemFile {
-			mvCode(snap, srcs[0], dst.Name)
-			return
-		}
-		if len(srcs) == 1 && srcs[0].Outer == nil && dst.Kind == refactor.ItemDir {
-			for _, pkg := range snap.Packages() {
-				if pkg.PkgPath == dst.Name {
-					if srcs[0].Kind == refactor.ItemFile {
-						mvFilePkg(snap, srcs[0].Name, pkg)
-					} else {
-						mvCodePkg(snap, srcs[0], pkg)
-					}
-					return
-				}
-			}
-			return []string{dst.Name}, false
-		}
+		mvCode(snap, srcs, dst, dstPkg)
+		return
 	}
 
 	// Otherwise, renaming to program identifier, which must not exist.
@@ -105,10 +122,6 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 	}
 
 	old, newItem, newPath := items[0], items[1], args[1]
-	if newItem != nil {
-		snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
-		return
-	}
 
 	var newOuter *refactor.Item
 	newPrefix, newName, ok := cutLast(newPath, ".")
@@ -131,6 +144,10 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 
 	// Rename of global.
 	if old.Outer == nil && newOuter == nil {
+		if newItem != nil { // TODO
+			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
+			return
+		}
 		rewriteDefn(snap, old, newName)
 		rewriteUses(snap, old, newName, notInScope(newName))
 		exp = token.IsExported(old.Name)
@@ -139,6 +156,10 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 
 	// Rename of struct field or method.
 	if old.Outer != nil && newOuter != nil && old.Outer.Obj == newOuter.Obj {
+		if newItem != nil { // TODO
+			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
+			return
+		}
 		rewriteDefn(snap, old, newName)
 		rewriteUses(snap, old, newName, nil)
 		_, last, _ := cutLast(old.Name, ".")
@@ -152,7 +173,11 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 		newTop != nil && newTop.Kind == refactor.ItemVar &&
 		(newOuter.Kind == refactor.ItemVar || newOuter.Kind == refactor.ItemField) {
 		tvar := newOuter.Obj.(*types.Var)
-		if _, ok := tvar.Type().Underlying().(*types.Struct); ok {
+		typ := tvar.Type().Underlying()
+		if ptr, ok := typ.(*types.Pointer); ok {
+			typ = ptr.Elem().Underlying()
+		}
+		if _, ok := typ.(*types.Struct); ok {
 			// Finding struct type is a little tricky.
 			// Except for empty structs, we could use the pos of the first field.
 			// But an empty struct type has no pos at all, so we have to
@@ -165,8 +190,10 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 				structPos = typ.Obj().Pos()
 			}
 
+			if newItem == nil {
+				addStructField(snap, structPos, newName, old.Obj.Type())
+			}
 			removeDecl(snap, old)
-			addStructField(snap, structPos, newName, old.Obj.Type())
 			rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
 			exp = token.IsExported(old.Name)
 			return
@@ -178,6 +205,10 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 	// TODO: Rename global function to method.
 	if old.Outer == nil && old.Kind == refactor.ItemFunc &&
 		newOuter != nil && newOuter.Kind == refactor.ItemType {
+		if newItem != nil { // TODO
+			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
+			return
+		}
 		if _, ok := newOuter.Obj.(*types.TypeName); ok {
 			// TODO check method set for newName
 			// TODO check that first argument of old function is receiver
@@ -187,15 +218,24 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 
 	// Rename method to global function.
 	if old.Kind == refactor.ItemMethod && old.Outer.Outer == nil && old.Outer.Kind == refactor.ItemType && newOuter == nil {
+		if newItem != nil { // TODO
+			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
+			return
+		}
 		methodToFunc(snap, old.Obj.(*types.Func), newName)
 		_, last, _ := cutLast(old.Name, ".")
 		exp = token.IsExported(last)
 		return
 	}
 
+	if old.Outer == nil && newItem != nil && newTop != nil && newTop.Obj != nil {
+		rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
+		return
+	}
+
 	// TODO: Rename global to variable in function.
 
-	snap.ErrorAt(token.NoPos, "unimplemented replacement: %v -> %v . %v", old, newOuter, newName)
+	snap.ErrorAt(token.NoPos, "unimplemented replacement: %v -> %v . %v [%v]", old, newOuter, newName, newItem)
 	return
 }
 
@@ -261,8 +301,8 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 		if len(decl.Specs) == 1 && len(spec.Names) == 1 {
 			// Delete entire declaration.
 			// TODO: Doc comments too.
-			// TODO: Newline too.
-			snap.ReplaceNode(decl, "")
+			// TODO: Newline too. (+1 is clumsy hack)
+			snap.ReplaceAt(decl.Pos(), decl.End()+1, "")
 			return
 		}
 
@@ -450,259 +490,4 @@ func nonParen(stack []ast.Node, i int) int {
 		}
 	}
 	return i
-}
-
-func mvCode(snap *refactor.Snapshot, old *refactor.Item, targetFile string) {
-	// Find target file.
-	_, file := snap.FileByName(targetFile)
-	if file == nil {
-		snap.ErrorAt(token.NoPos, "cannot find file %s in target packages", targetFile)
-		return
-	}
-	dst := file.End()
-
-	srcPkg := snap.PackageAt(old.Obj.Pos())
-	stack := snap.SyntaxAt(old.Obj.Pos())
-	var decl ast.Node
-	switch n := stack[2].(type) {
-	case *ast.GenDecl:
-		decl = n
-	case *ast.FuncDecl:
-		decl = n
-	default:
-		snap.ErrorAt(old.Obj.Pos(), "unknown declaration type %T", n)
-	}
-
-	// Make sure target file has the necessary imports.
-	refactor.Walk(decl, func(stack []ast.Node) {
-		if id, ok := stack[0].(*ast.Ident); ok {
-			if p, ok := srcPkg.TypesInfo.Uses[id].(*types.PkgName); ok {
-				snap.NeedImport(dst, p.Name(), p.Imported().Path())
-			}
-		}
-	})
-
-	// Move code.
-	text := snap.Text(decl.Pos(), decl.End())
-	snap.ReplaceNode(decl, "")
-	snap.InsertAt(dst, "\n"+string(text))
-
-	// TODO: Delete unused imports at some point.
-}
-
-func mvCodePkg(snap *refactor.Snapshot, old *refactor.Item, targetPkg *packages.Package) {
-	// Find target package.
-	dst := targetPkg.Syntax[0].End()
-	if dst == token.NoPos {
-		snap.ErrorAt(token.NoPos, "cannot find pkg")
-		return
-	}
-
-	stack := snap.SyntaxAt(old.Obj.Pos())
-	var decl ast.Node
-	switch n := stack[2].(type) {
-	case *ast.GenDecl:
-		decl = n
-	case *ast.FuncDecl:
-		decl = n
-	default:
-		snap.ErrorAt(old.Obj.Pos(), "unknown declaration type %T", n)
-	}
-
-	// Make sure target package has the necessary imports.
-	// Remove references to the target package itself.
-	// Insert references to the original package as needed.
-	// TODO: Something about import cycles.
-	pkg := snap.PackageAt(decl.Pos())
-	text := snap.Text(decl.Pos(), decl.End())
-	buf := edit.NewBuffer(text)
-	refactor.Walk(decl, func(stack []ast.Node) {
-		if id, ok := stack[0].(*ast.Ident); ok {
-			obj := pkg.TypesInfo.Uses[id]
-			if pn, ok := obj.(*types.PkgName); ok {
-				if pn.Imported().Path() == targetPkg.Types.Path() {
-					sel := stack[1].(*ast.SelectorExpr)
-					buf.Replace(int(sel.Pos()-decl.Pos()), int(sel.Sel.Pos()-decl.Pos()), "")
-				} else {
-					snap.NeedImport(dst, pn.Id(), pn.Imported().Path())
-				}
-			} else if obj != nil && obj.Parent() == pkg.Types.Scope() {
-				off := int(id.Pos() - decl.Pos())
-				snap.NeedImport(dst, pkg.Types.Name(), pkg.Types.Path())
-				buf.Replace(off, off, pkg.Types.Name()+".")
-			}
-		}
-	})
-
-	// Move code.
-	snap.ReplaceNode(decl, "")
-	snap.InsertAt(dst, "\n"+buf.String())
-
-	// Update references to what was moved.
-	rewriteUses(snap, old, targetPkg.Types.Name()+"."+old.Name, nil)
-}
-
-func mvFilePkg(snap *refactor.Snapshot, filename string, targetPkg *packages.Package) {
-	filePkg, file := snap.FileByName(filename)
-	if file == nil {
-		snap.ErrorAt(token.NoPos, "cannot find package containing %s", filename)
-		return
-	}
-
-	// TODO Allow creating new file.
-	targetDir := filepath.Dir(snap.File(targetPkg.Syntax[0].Package))
-	targetFilename := filepath.Join(targetDir, filepath.Base(filename))
-	targetPkg, targetFile := snap.FileByName(targetFilename)
-	if targetFile == nil {
-		snap.ErrorAt(token.NoPos, "cannot find target file %s", targetFilename)
-		return
-	}
-
-	// TODO: Work out better file text.
-	pos := file.Decls[0].Pos()
-	snap.ForceDeleteAt(pos, file.End())
-
-	// Rewrite text being moved to correct package references.
-	ed := edit.NewBuffer(snap.Text(pos, file.End()))
-	fixImports(snap, ed, pos, file.End(), targetFile.End())
-	snap.InsertAt(targetFile.End(), "\n"+ed.String())
-
-	// Build list of objects being moved.
-	m := make(map[types.Object]*packages.Package)
-	defs := filePkg.TypesInfo.Defs
-	for _, d := range file.Decls {
-		switch d := d.(type) {
-		case *ast.GenDecl:
-			for _, spec := range d.Specs {
-				switch spec := spec.(type) {
-				case *ast.ImportSpec:
-					panic("imports")
-				case *ast.ValueSpec:
-					for _, id := range spec.Names {
-						obj := defs[id]
-						if obj == nil {
-							panic("no obj for var/const")
-						}
-						m[obj] = targetPkg
-					}
-				case *ast.TypeSpec:
-					obj := defs[spec.Name]
-					if obj == nil {
-						panic("no obj for type")
-					}
-					m[obj] = targetPkg
-				}
-			}
-		case *ast.FuncDecl:
-			if d.Recv != nil {
-				continue
-			}
-			obj := defs[d.Name]
-			if obj == nil {
-				panic("no obj for func")
-			}
-			m[obj] = targetPkg
-		}
-	}
-
-	// TODO: Check that the moves don't create import cycles.
-
-	// Update all references to point to new locations.
-	rewritePkgRefs(snap, m)
-}
-
-// FixImports rewrites the buffer src, which corresponds to [srcPos, srcEnd),
-// to be ready for insertion at dstPos.
-func fixImports(snap *refactor.Snapshot, src *edit.Buffer, srcPos, srcEnd, dstPos token.Pos) {
-	dstPkg := snap.PackageAt(dstPos)
-	srcPkg := snap.PackageAt(srcPos)
-
-	for _, file := range srcPkg.Syntax {
-		if file.Pos() <= srcPos && srcPos < file.End() {
-			refactor.WalkRange(file, srcPos, srcEnd, func(stack []ast.Node) {
-				id, ok := stack[0].(*ast.Ident)
-				if !ok {
-					return
-				}
-
-				obj := srcPkg.TypesInfo.Uses[id]
-				if obj == nil {
-					return
-				}
-
-				// If this ID is p.ID where p is a package,
-				// make sure we have the import available,
-				// or if this is package p, remove the p.
-				if sel, ok := stack[1].(*ast.SelectorExpr); ok {
-					if xid, ok := sel.X.(*ast.Ident); ok {
-						if pid, ok := srcPkg.TypesInfo.Uses[xid].(*types.PkgName); ok {
-							if pid.Imported() == dstPkg.Types {
-								// Remove package qualifier.
-								if snap.LookupAt(id.Name, dstPos) != obj {
-									snap.ErrorAt(dstPos, "%s is shadowed at destination", id.Name)
-								}
-								src.Replace(int(sel.Pos()-srcPos), int(sel.Pos()-srcPos), "")
-							} else {
-								snap.NeedImport(dstPos, xid.Name, pid.Imported().Path())
-							}
-						}
-					}
-					return
-				}
-
-				// Otherwise, an ID not in a selector.
-				// If it refers to a global in the original package, add an import if needed.
-				if obj.Parent() == srcPkg.Types.Scope() {
-					if dstPkg == srcPkg {
-						if snap.LookupAt(id.Name, dstPos) != obj {
-							snap.ErrorAt(dstPos, "%s is shadowed at destination", id.Name)
-						}
-					} else {
-						snap.NeedImport(dstPos, srcPkg.Types.Name(), srcPkg.Types.Path())
-						src.Replace(int(id.Pos()-srcPos), int(id.Pos()-srcPos), srcPkg.Types.Name()+".")
-					}
-				}
-			})
-		}
-	}
-}
-
-func rewritePkgRefs(snap *refactor.Snapshot, m map[types.Object]*packages.Package) {
-	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
-		refactor.Walk(file, func(stack []ast.Node) {
-			id, ok := stack[0].(*ast.Ident)
-			if !ok {
-				return
-			}
-			obj := pkg.TypesInfo.Uses[id]
-			newPkg := m[obj]
-			if newPkg == nil {
-				return
-			}
-
-			// obj is moving to a new package.
-			if sel, ok := stack[1].(*ast.SelectorExpr); ok {
-				// obj is already otherPkg.Name; update to newPkg.Name.
-				if newPkg == pkg {
-					// Delete the no-longer-needed package qualifier.
-					if snap.LookupAt(id.Name, id.Pos()) != nil {
-						snap.ErrorAt(id.Pos(), "%s is shadowed at new unqualified use", id.Name)
-					}
-					snap.DeleteAt(sel.Pos(), id.Pos())
-				} else {
-					snap.NeedImport(id.Pos(), newPkg.Types.Name(), newPkg.Types.Path())
-					snap.ReplaceNode(sel.X, newPkg.Types.Name())
-				}
-			} else if newPkg == pkg {
-				// obj is moving to pkg but is already referred to in pkg without a qualifier.
-				// Can happen if pkg imports the old location with a dot import.
-				// Can't be shadowed or the reference wouldn't be to obj.
-				// Do nothing.
-			} else {
-				// obj is moving to a new package and needs a qualified import.
-				snap.NeedImport(id.Pos(), newPkg.Types.Name(), newPkg.Types.Path())
-				snap.InsertAt(id.Pos(), newPkg.Types.Name()+".")
-			}
-		})
-	})
 }
