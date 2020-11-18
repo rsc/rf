@@ -170,6 +170,9 @@ func checkEx(snap *refactor.Snapshot, code string) ([]example, error) {
 		}
 	}
 
+	if typesPkg == nil {
+		typesPkg = types.NewPackage("ex", "ex")
+	}
 	check := types.NewChecker(conf, snap.Fset(), typesPkg, info)
 	err = check.Files([]*ast.File{f})
 	_ = err // already handled in conf.Error
@@ -198,6 +201,26 @@ func checkEx(snap *refactor.Snapshot, code string) ([]example, error) {
 	return nil, nil
 }
 
+func avoidOf(snap *refactor.Snapshot, info *types.Info, subst ast.Node) map[ast.Node]bool {
+	avoid := make(map[ast.Node]bool)
+	refactor.Walk(subst, func(stack []ast.Node) {
+		id, ok := stack[0].(*ast.Ident)
+		if !ok {
+			return
+		}
+		if obj := info.Uses[id]; obj != nil {
+			stack := snap.SyntaxAt(obj.Pos())
+			for i := 0; i < len(stack); i++ {
+				switch n := stack[i].(type) {
+				case *ast.FuncDecl, *ast.GenDecl:
+					avoid[n] = true
+				}
+			}
+		}
+	})
+	return avoid
+}
+
 func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, pattern, subst ast.Node) {
 	m := &matcher{
 		fset:    snap.Fset(),
@@ -208,9 +231,33 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 		env:     make(map[string]ast.Expr),
 	}
 
+	var avoid map[ast.Node]bool
+
 	snap.ForEachTargetFile(func(target *packages.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
 			if m.match(pattern, stack[0]) {
+				// Do not apply substitution in its own definition.
+				if avoid == nil {
+					avoid = avoidOf(snap, info, subst)
+				}
+				for _, n := range stack {
+					if avoid[n] {
+						return
+					}
+				}
+
+				// Do not substitute a function call on LHS of assignment.
+				// TODO: Generalize.
+				if as, ok := stack[1].(*ast.AssignStmt); ok {
+					for _, l := range as.Lhs {
+						if l == stack[0] {
+							if _, isCall := subst.(*ast.CallExpr); isCall {
+								return
+							}
+						}
+					}
+				}
+
 				matchPos := stack[0].Pos()
 				// Substitute pattern variable values from match into substitution text.
 				// Because these values are coming from the same source location
@@ -238,13 +285,15 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 					// If this ID is p.ID where p is a package,
 					// make sure we have the import available,
 					// or if this is package p, remove the p.
-					if sel, ok := stack[1].(*ast.SelectorExpr); ok {
-						if xid, ok := sel.X.(*ast.Ident); ok {
-							if pid, ok := info.Uses[xid].(*types.PkgName); ok {
-								snap.NeedImport(matchPos, xid.Name, pid.Imported())
+					if len(stack) >= 2 {
+						if sel, ok := stack[1].(*ast.SelectorExpr); ok {
+							if xid, ok := sel.X.(*ast.Ident); ok {
+								if pid, ok := info.Uses[xid].(*types.PkgName); ok {
+									snap.NeedImport(matchPos, xid.Name, pid.Imported())
+								}
 							}
+							return
 						}
-						return
 					}
 
 					// Is this ID referring to a global in the typesPkg? If so:
@@ -256,8 +305,8 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 					}
 					if obj != nil && typesPkg != nil && obj.Parent() == typesPkg.Scope() {
 						if typesPkg == target.Types {
-							if snap.LookupAt(id.Name, stack[0].Pos()) != obj {
-								snap.ErrorAt(matchPos, "%s is shadowed in replacement", id.Name)
+							if xobj := snap.LookupAt(id.Name, matchPos); xobj != obj {
+								snap.ErrorAt(matchPos, "%s is shadowed in replacement - %v", id.Name, xobj)
 							}
 						} else {
 							snap.NeedImport(matchPos, typesPkg.Name(), typesPkg)
@@ -277,7 +326,15 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 				if needParen(substX, stack) {
 					substText = "(" + substText + ")"
 				}
-				snap.ReplaceNode(stack[0], substText)
+
+				// Do not replace text that isn't changing.
+				// Helps with x.M() -> x.R() applied to z.M().M().M().
+				old := string(snap.Text(stack[0].Pos(), stack[0].End()))
+				i := 0
+				for i < len(old) && i < len(substText) && old[i] == substText[i] {
+					i++
+				}
+				snap.ReplaceAt(stack[0].Pos()+token.Pos(i), stack[0].End(), substText[i:])
 			}
 		})
 	})
@@ -303,7 +360,8 @@ func needParen(newX ast.Node, stack []ast.Node) bool {
 		*ast.SliceExpr,
 		*ast.ParenExpr,
 		*ast.Ident,
-		*ast.BasicLit:
+		*ast.BasicLit,
+		*ast.CompositeLit:
 		return false // nothing can tear these apart
 	case *ast.BinaryExpr:
 		prec = newX.Op.Precedence()

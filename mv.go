@@ -53,14 +53,15 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 	}
 
 	var items []*refactor.Item
-	for _, arg := range args {
-		items = append(items, snap.Lookup(arg))
-	}
-	for i, item := range items[:len(items)-1] {
-		if item == nil {
-			snap.ErrorAt(token.NoPos, "cannot find %s", args[i])
-			return
+	for i, arg := range args {
+		item := snap.Lookup(arg)
+		if item == nil && i < len(args)-1 {
+			snap.ErrorAt(token.NoPos, "cannot find %s", arg)
 		}
+		items = append(items, item)
+	}
+	if snap.Errors() > 0 {
+		return
 	}
 
 	srcs, dst := items[:len(items)-1], items[len(items)-1]
@@ -111,7 +112,7 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 			return
 		}
 
-		mvCode(snap, srcs, dst, dstPkg)
+		exp = mvCode(snap, srcs, dst, dstPkg)
 		return
 	}
 
@@ -201,7 +202,6 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 			removeDecl(snap, old)
 			rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
 			exp = token.IsExported(old.Name)
-			println(exp, old.Name)
 			return
 		}
 	}

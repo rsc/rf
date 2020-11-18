@@ -1,0 +1,21 @@
+ex var x int; x+1 -> F(x)
+-- x.go --
+package p
+
+func F(x int) int { return x+1 }
+
+var i int
+var j = i+1
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,6 +1,6 @@
+ package p
+
+-func F(x int) int { return x+1 }
++func F(x int) int { return x + 1 }
+
+ var i int
+-var j = i+1
++var j = F(i)

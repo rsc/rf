@@ -201,6 +201,7 @@ type Snapshot struct {
 }
 
 func (s *Snapshot) overlay() map[string][]byte {
+	return nil // TODO remove when the spurious Writes go away
 	if s == nil {
 		return nil
 	}
@@ -329,7 +330,12 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		ParseFile: s.files.ParseFile,
 		Overlay:   s.overlay(),
 	}
-	pkgs, err := packages.Load(cfg, append([]string{"."}, extra...)...)
+	list := []string{"."}
+	list = append(list, extra...)
+	for _, t := range r.targets {
+		list = append(list, t.PkgPath)
+	}
+	pkgs, err := packages.Load(cfg, list...)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +386,7 @@ func (r *Refactor) load(base *Snapshot, mode packages.LoadMode, extra []string) 
 		}
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("missing expected packages: %v", missing)
+		return nil, fmt.Errorf("missing expected packages: %v loaded %v", missing, extra)
 	}
 
 	have := make(map[*packages.Package]bool)
@@ -962,32 +968,54 @@ func (s *Snapshot) NeedImport(pos token.Pos, id string, pkg *types.Package) stri
 		panic("no file")
 	}
 
-	for _, imp := range file.Imports {
-		if importPath(imp) == pkg.Path() {
-			name := importName(imp)
-			if name == "" {
-				name = pkg.Name()
-			}
-			if name == id || id == "" {
-				// TODO check scope
-				return name
+	want := id
+	if id == "" {
+		want = pkg.Name()
+	}
+	names := []string{want, want + "pkg", want + "_"}
+	for _, id := range names {
+		for _, imp := range file.Imports {
+			if importPath(imp) == pkg.Path() {
+				name := importName(imp)
+				if name == "" {
+					name = pkg.Name()
+				}
+				if name == id {
+					if obj := s.LookupAt(name, pos); obj == nil {
+						return name
+					} else if obj, ok := obj.(*types.PkgName); ok && obj.Pkg().Path() != pkg.Path() {
+						return name
+					}
+				}
 			}
 		}
 	}
 
-	if id == "" {
-		id = pkg.Name()
+	want = ""
+	for _, id := range names {
+		if obj := s.LookupAt(id, pos); obj == nil {
+			want = id
+			break
+		} else if obj, ok := obj.(*types.PkgName); ok && obj.Pkg().Path() != pkg.Path() {
+			want = id
+			break
+		}
 	}
+	if want == "" {
+		s.ErrorAt(pos, "package name %s is shadowed", pkg.Name())
+		want = pkg.Name()
+	}
+
 	filename := s.Position(file.Package).Filename
 	added := s.added[filename]
-	key := newImport{id, pkg}
+	key := newImport{want, pkg}
 	for _, p := range added {
 		if p == key {
-			return id
+			return want
 		}
 	}
 	s.added[filename] = append(s.added[filename], key)
-	return id
+	return want
 }
 
 func (s *Snapshot) addImports() {
@@ -1065,7 +1093,7 @@ func (s *Snapshot) addImportList(file string, list []newImport) {
 				if id == need.pkg.Name() {
 					id = ""
 				}
-				s.InsertAt(spec.Pos(), fmt.Sprintf("%s %q\n", id, need.pkg))
+				s.InsertAt(spec.Pos(), fmt.Sprintf("%s %q\n", id, need.pkg.Path()))
 			}
 		}
 	}

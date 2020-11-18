@@ -60,15 +60,15 @@ func transplant(snap *refactor.Snapshot, code string, src, dst token.Pos, moves 
 				snap.ErrorAt(dst, "%s is already declared\n\t%s: previous declaration", id.Name, snap.Addr(found.Pos()))
 			}
 		} else {
-			snap.NeedImport(dst, objPkg.Name(), objPkg)
-			ed.Insert(id.Pos(), objPkg.Name()+".")
+			name := snap.NeedImport(dst, "", objPkg)
+			ed.Insert(id.Pos(), name+".")
 		}
 	})
 	return ed.String()
 }
 
 // mvCode moves the code described by srcs into dst.
-func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, dstPkg *packages.Package) {
+func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, dstPkg *packages.Package) (anyExported bool) {
 	// Build list of what's moving.
 	// Keep a list of the objects in files separately, so that we can avoid moving them twice.
 	moves := make(map[types.Object]*packages.Package)
@@ -120,6 +120,8 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 	}
 
 	rewritePkgRefs(snap, moves)
+
+	return true // TODO: better
 }
 
 func recordFileMoves(srcPkg *packages.Package, file *ast.File, dstPkg *packages.Package, moves map[types.Object]*packages.Package) {
@@ -232,7 +234,7 @@ func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*packages.Pa
 			}
 
 			// obj is moving to a new package.
-			if sel, ok := stack[1].(*ast.SelectorExpr); ok {
+			if sel, ok := stack[1].(*ast.SelectorExpr); ok && sel.Sel == id {
 				// obj is already otherPkg.Name; update to newPkg.Name.
 				if newPkg == pkg {
 					// Delete the no-longer-needed package qualifier.
@@ -241,8 +243,8 @@ func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*packages.Pa
 					}
 					snap.DeleteAt(sel.Pos(), id.Pos())
 				} else {
-					snap.NeedImport(id.Pos(), newPkg.Types.Name(), newPkg.Types)
-					snap.ReplaceNode(sel.X, newPkg.Types.Name())
+					name := snap.NeedImport(id.Pos(), "", newPkg.Types)
+					snap.ReplaceNode(sel.X, name)
 				}
 			} else if newPkg == pkg {
 				// obj is moving to pkg but is already referred to in pkg without a qualifier.

@@ -46,9 +46,10 @@ func main() {
 }
 
 var cmds = map[string]func(*refactor.Snapshot, string) ([]string, bool){
-	"add": cmdAdd,
-	"ex":  cmdEx,
-	"mv":  cmdMv,
+	"add":  cmdAdd,
+	"ex":   cmdEx,
+	"hide": cmdHide,
+	"mv":   cmdMv,
 }
 
 type loader interface {
@@ -90,21 +91,14 @@ func run(rf *refactor.Refactor, script string) error {
 		if snap.Errors() > 0 {
 			return err
 		}
-
-		if len(more) > 0 || exp {
-			if exp {
-				pkgs, err := rf.Importers(snap)
-				if err != nil {
-					return err
-				}
-				more = append(more, pkgs...)
-			}
+		if len(more) > 0 {
 			snap, err = base.Load(more...)
 			if err != nil {
 				return err
 			}
 
-			evenMore, _ := fn(snap, args)
+			var evenMore []string
+			evenMore, exp = fn(snap, args)
 			if snap.Errors() > 0 {
 				return err
 			}
@@ -112,9 +106,29 @@ func run(rf *refactor.Refactor, script string) error {
 				return fmt.Errorf("%s did not converge: after %v, needs %v", cmd, more, evenMore)
 			}
 		}
+		if true || cmd == "mv" { // TODO better
+			exp = true
+		}
+		if exp {
+			pkgs, err := rf.Importers(snap)
+			if err != nil {
+				return err
+			}
+			more = append(more, pkgs...)
+			snap, err = base.Load(more...)
+			if err != nil {
+				return err
+			}
+
+			fn(snap, args)
+			if snap.Errors() > 0 {
+				return err
+			}
+		}
 
 		snap.Gofmt()
 		base = snap
+		snap.Write() // TODO: Should not be necessary.
 	}
 
 	if snap == nil {
@@ -141,7 +155,7 @@ func run(rf *refactor.Refactor, script string) error {
 		return nil
 	}
 
-	return snap.Write()
+	return nil // TODO snap.Write()
 }
 
 var isGoIdent = regexp.MustCompile(`^[\p{L}_][\p{L}\p{Nd}_]*$`)

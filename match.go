@@ -63,7 +63,7 @@ func (m *matcher) matchStmt(x, y ast.Stmt) bool {
 	switch x := x.(type) {
 	case *ast.AssignStmt:
 		y := y.(*ast.AssignStmt)
-		if len(x.Lhs) != len(y.Lhs) || len(x.Rhs) != len(y.Rhs) {
+		if len(x.Lhs) != len(y.Lhs) || len(x.Rhs) != len(y.Rhs) || x.Tok != y.Tok {
 			return false
 		}
 		for i := range x.Lhs {

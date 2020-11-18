@@ -1,5 +1,3 @@
-Experimental refactoring tool. Work in progress.
+rf is an experimental refactoring tool. It is very much a work in progress.
 
-	go install rsc.io/rf@latest  # Go 1.16 and later
-	go get -u  rsc.io/rf         # Go 1.15 and earlier
-
+**rf is incredibly rough and likely to be buggy and change incompatibly.**
