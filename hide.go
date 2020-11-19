@@ -17,7 +17,7 @@ import (
 func cmdHide(snap *refactor.Snapshot, text string) (more []string, exp bool) {
 	args := strings.Fields(text)
 	if len(args) < 1 {
-		snap.ErrorAt(token.NoPos, "usage: gude T.F...")
+		snap.ErrorAt(token.NoPos, "usage: hide T.F...")
 		return
 	}
 
