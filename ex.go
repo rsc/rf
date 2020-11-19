@@ -343,6 +343,9 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 
 // needParen reports whether replacing stack[0] with newX requires parens around newX.
 func needParen(newX ast.Node, stack []ast.Node) bool {
+	if len(stack) == 1 {
+		return false
+	}
 	inner, outer := stack[0], stack[1]
 	if _, ok := outer.(ast.Expr); !ok {
 		// Context is not an expression; no chance of an expression breaking apart.
