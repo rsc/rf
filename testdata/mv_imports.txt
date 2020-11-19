@@ -1,4 +1,8 @@
 mv x.go example.com/q
+-- go.mod --
+module example.com
+-- empty.go --
+package p
 -- x.go --
 package p
 
@@ -15,8 +19,6 @@ import (
 func F() string {
 	return a.S + fmt.Sprint(1) + b.S + bytes.NewBuffer(nil).String() + c.S + reflect.ValueOf(0).String() + d.S
 }
--- go.mod --
-module example.com
 -- a/a.go --
 package a
 const S = "hello"

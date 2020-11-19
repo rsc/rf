@@ -1,6 +1,8 @@
 mv x.go example.com/m/q
 -- go.mod --
 module example.com/m
+-- empty.go --
+package m
 -- x.go --
 package m
 
