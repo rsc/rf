@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"golang.org/x/tools/txtar"
 	"rsc.io/rf/refactor"
 )
+
+var updateTestData = flag.Bool("u", false, "update testdata instead of failing")
 
 func TestRun(t *testing.T) {
 	files, err := filepath.Glob("testdata/*.txt")
@@ -67,6 +70,18 @@ func TestRun(t *testing.T) {
 				fmt.Fprintf(rf.Stderr, "ERROR: %v\n", err)
 			}
 
+			if *updateTestData {
+				stderrChanged := updateFile(ar, "stderr", stderr.Bytes())
+				stdoutChanged := updateFile(ar, "stdout", stdout.Bytes())
+				if stdoutChanged || stderrChanged {
+					if err := ioutil.WriteFile(file, txtar.Format(ar), 0666); err != nil {
+						t.Fatal(err)
+					}
+					t.Log("updated")
+				}
+				return
+			}
+
 			cmp := func(name string, have, want []byte) {
 				have = trimSpace(have)
 				want = trimSpace(want)
@@ -87,4 +102,32 @@ func trimSpace(data []byte) []byte {
 		lines[i] = bytes.TrimRight(line, " ")
 	}
 	return bytes.Join(lines, []byte("\n"))
+}
+
+func updateFile(ar *txtar.Archive, name string, data []byte) bool {
+	for i := range ar.Files {
+		if file := &ar.Files[i]; file.Name == name {
+			if len(data) == 0 {
+				ar.Files = append(ar.Files[:i], ar.Files[i+1:]...)
+				return true
+			}
+
+			if !bytes.Equal(file.Data, data) {
+				file.Data = data
+				return true
+			}
+
+			return false
+		}
+	}
+
+	if len(data) != 0 {
+		ar.Files = append(ar.Files, txtar.File{
+			Name: name,
+			Data: data,
+		})
+		return true
+	}
+
+	return false
 }
