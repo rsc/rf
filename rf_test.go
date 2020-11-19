@@ -105,6 +105,8 @@ func trimSpace(data []byte) []byte {
 }
 
 func updateFile(ar *txtar.Archive, name string, data []byte) bool {
+	data = trimSpace(data)
+
 	for i := range ar.Files {
 		if file := &ar.Files[i]; file.Name == name {
 			if len(data) == 0 {
