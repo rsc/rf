@@ -5,6 +5,7 @@ add T1 \ # comment
 	type T2 = T
 add x.go:/var/ /* hello */
 add x.go // EOF
+add T:$ Z int
 -- x.go --
 package p
 
@@ -17,7 +18,7 @@ type T struct {
 diff old/x.go new/x.go
 --- old/x.go
 +++ new/x.go
-@@ -2,6 +2,15 @@
+@@ -2,6 +2,16 @@
 
  const C = 1
 
@@ -27,6 +28,7 @@ diff old/x.go new/x.go
  type T struct {
  	X int
 +	Y int `tag`
++	Z int
  }
 +type T1 = T
 +

@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -789,30 +790,67 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 			if item == nil {
 				return nil, expr, ""
 			}
+			var start, end token.Pos
 			switch item.Kind {
 			default:
 				s.ErrorAt(token.NoPos, "cannot apply text range to %v", item.Kind)
 				return nil, expr, ""
+			case ItemType:
+				tvar := item.Obj
+				typ := tvar.Type().Underlying()
+				if ptr, ok := typ.(*types.Pointer); ok {
+					typ = ptr.Elem().Underlying()
+				}
+				switch typ.(type) {
+				default:
+					s.ErrorAt(token.NoPos, "cannot apply text range to %v %v", item.Kind, typ)
+					return nil, expr, ""
+				case *types.Struct:
+					// Finding struct type is a little tricky.
+					// Except for empty structs, we could use the pos of the first field.
+					// But an empty struct type has no pos at all, so we have to
+					// use the pos of the declaration in which the struct appears.
+					var structPos token.Pos
+					switch typ := tvar.Type().(type) {
+					case *types.Struct:
+						structPos = tvar.Pos()
+					case *types.Named:
+						structPos = typ.Obj().Pos()
+					}
+					stack := s.SyntaxAt(structPos) // Ident TypeSpec GenDecl
+					struc := stack[1].(*ast.TypeSpec).Type.(*ast.StructType)
+					start, end = struc.Fields.Opening+1, struc.Fields.Closing
+				}
+
 			case ItemFile:
 				_, f := s.FileByName(item.Name)
-				base, eof := s.FileRange(f.Package)
-				text := s.Text(base, eof)
-				lo, hi, err := addrToByteRange(addr, 0, text)
-				if err != nil {
-					s.ErrorAt(token.NoPos, "cannot evaluate address %s: %v", addr, err)
-					panic("bad addr")
-				}
-				item := &Item{
-					Kind:  ItemPos,
-					Outer: item,
-					Pos:   base + token.Pos(lo),
-					End:   base + token.Pos(hi),
-				}
-				return item, expr, rest
+				start, end = s.FileRange(f.Package)
 			}
+
+			text := s.Text(start, end)
+			lo, hi, err := addrToByteRange(addr, 0, text)
+			if err != nil {
+				s.ErrorAt(token.NoPos, "cannot evaluate address %s: %v", addr, err)
+				panic("bad addr")
+			}
+			item = &Item{
+				Kind:  ItemPos,
+				Outer: item,
+				Pos:   start + token.Pos(lo),
+				End:   start + token.Pos(hi),
+			}
+			return item, expr, rest
 		}
 	}
 	return s.Lookup(expr), expr, ""
+}
+
+func StackTypes(list []ast.Node) string {
+	var types []reflect.Type
+	for _, n := range list {
+		types = append(types, reflect.TypeOf(n))
+	}
+	return fmt.Sprint(types)
 }
 
 func (s *Snapshot) LookupAll(args string) ([]*Item, []string) {
