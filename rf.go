@@ -46,10 +46,9 @@ func main() {
 }
 
 var cmds = map[string]func(*refactor.Snapshot, string) ([]string, bool){
-	"add":  cmdAdd,
-	"ex":   cmdEx,
-	"hide": cmdHide,
-	"mv":   cmdMv,
+	"add": cmdAdd,
+	"ex":  cmdEx,
+	"mv":  cmdMv,
 }
 
 type loader interface {
@@ -105,9 +104,6 @@ func run(rf *refactor.Refactor, script string) error {
 			if len(evenMore) > 0 {
 				return fmt.Errorf("%s did not converge: after %v, needs %v", cmd, more, evenMore)
 			}
-		}
-		if true || cmd == "mv" { // TODO better
-			exp = true
 		}
 		if exp {
 			pkgs, err := rf.Importers(snap)
