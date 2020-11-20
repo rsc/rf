@@ -1,0 +1,11 @@
+rm x.go:/go:generate/-+
+-- x.go --
+//go:generate hello world
+package p
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,2 +1 @@
+-//go:generate hello world
+ package p

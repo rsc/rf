@@ -31,12 +31,12 @@ func cmdRm(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 		switch item.Kind {
 		default:
 			snap.ErrorAt(token.NoPos, "rm %s: %v not supported", arg, item.Kind)
-			continue
+		case refactor.ItemPos:
+			snap.DeleteAt(item.Pos, item.End)
 		case refactor.ItemConst, refactor.ItemFunc, refactor.ItemMethod, refactor.ItemType, refactor.ItemVar:
 			rm[item.Obj] = true
 		}
 	}
-
 	removeDecls(snap, rm)
 
 	// TODO: If exported API is being deleted, maybe return exp = true
