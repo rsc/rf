@@ -1,0 +1,35 @@
+add T.X Y int `tag`
+add C var D = 1
+add T type T1 = T
+add T1 \
+	type T2 = T
+add x.go:/var/ /* hello */
+add x.go // EOF
+-- x.go --
+package p
+
+const C = 1
+
+type T struct {
+	X int
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,6 +2,15 @@
+
+ const C = 1
+
++var /* hello */
++D = 1
++
+ type T struct {
+ 	X int
++	Y int `tag`
+ }
++type T1 = T
++
++type T2 = T
++
++// EOF

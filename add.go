@@ -5,44 +5,70 @@
 package main
 
 import (
+	"go/ast"
 	"go/token"
-	"go/types"
 	"strings"
 
+	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
-func cmdAdd(snap *refactor.Snapshot, text string) (more []string, exp bool) {
-	text = strings.TrimSpace(text)
-	name, rest, _ := cutAny(text, " \t")
-	prefix, name, ok := cut(name, ".")
-	if !ok {
-		snap.ErrorAt(token.NoPos, "add needs X.Y")
+func cmdAdd(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+	for len(args) > 0 && args[0] == ' ' || args[0] == '\t' {
+		args = args[1:]
+	}
+	addr, text, _ := cutAny(args, " \t")
+	if strings.TrimSpace(text) == "" {
+		snap.ErrorAt(token.NoPos, "usage: add address text...\n")
 		return
 	}
-	outer := snap.Lookup(prefix)
-	if outer.Kind == refactor.ItemVar || outer.Kind == refactor.ItemField {
-		tvar := outer.Obj.(*types.Var)
-		typ := tvar.Type().Underlying()
-		if ptr, ok := typ.(*types.Pointer); ok {
-			typ = ptr.Elem().Underlying()
-		}
-		if _, ok := typ.(*types.Struct); ok {
-			// Finding struct type is a little tricky.
-			// Except for empty structs, we could use the pos of the first field.
-			// But an empty struct type has no pos at all, so we have to
-			// use the pos of the declaration in which the struct appears.
-			var structPos token.Pos
-			switch typ := tvar.Type().(type) {
-			case *types.Struct:
-				structPos = tvar.Pos()
-			case *types.Named:
-				structPos = typ.Obj().Pos()
-			}
-			addStructField(snap, structPos, name, rest)
-			return
-		}
+
+	item := snap.Lookup(addr)
+	if item == nil {
+		snap.ErrorAt(token.NoPos, "add: cannot find %s", addr)
+		return
 	}
-	snap.ErrorAt(token.NoPos, "bad add")
-	return
+
+	var pos token.Pos
+	switch item.Kind {
+	default:
+		snap.ErrorAt(token.NoPos, "TODO: add after %s", item.Kind)
+
+	case refactor.ItemConst, refactor.ItemFunc, refactor.ItemType, refactor.ItemVar, refactor.ItemField:
+		stack := snap.SyntaxAt(item.Obj.Pos())
+		after := stack[1]
+		switch after.(type) {
+		case *ast.ValueSpec, *ast.TypeSpec:
+			decl := stack[2].(*ast.GenDecl)
+			if decl.Lparen == token.NoPos {
+				after = decl
+			}
+		}
+		_, pos = nodeRange(snap, after)
+
+	case refactor.ItemFile:
+		srcPkg := snap.Targets()[0] // TODO
+		srcFile := findFile(snap, srcPkg, item.Name)
+		_, pos = snap.FileRange(srcFile.Package)
+
+	case refactor.ItemDir:
+		var dstPkg *packages.Package
+		for _, pkg := range snap.Packages() {
+			if pkg.PkgPath == item.Name {
+				dstPkg = pkg
+				break
+			}
+		}
+		if dstPkg == nil {
+			return []string{item.Name}, false
+		}
+		_, pos = snap.FileRange(dstPkg.Syntax[0].Package)
+
+	case refactor.ItemPos:
+		pos = item.End
+	}
+
+	// TODO: Is final \n a good idea?
+	snap.InsertAt(pos, text+"\n")
+	return nil, false
 }
