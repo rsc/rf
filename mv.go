@@ -45,27 +45,25 @@ func inScope(name string, obj types.Object) posChecker {
 	}
 }
 
-func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
-	args := strings.Fields(argsText)
-	if len(args) < 2 {
+func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+	items, _ := snap.LookupAll(args)
+	if len(items) < 2 {
 		snap.ErrorAt(token.NoPos, "usage: mv old... new")
 		return
 	}
 
-	var items []*refactor.Item
-	for i, arg := range args {
-		item := snap.Lookup(arg)
-		if item == nil && i < len(args)-1 {
-			snap.ErrorAt(token.NoPos, "cannot find %s", arg)
+	for _, item := range items[:len(items)-1] {
+		if item.Kind == refactor.ItemNotFound {
+			snap.ErrorAt(token.NoPos, "cannot find %s", item.Name)
+			continue
 		}
-		items = append(items, item)
 	}
 	if snap.Errors() > 0 {
 		return
 	}
 
 	srcs, dst := items[:len(items)-1], items[len(items)-1]
-	if dst != nil && (dst.Kind == refactor.ItemDir || dst.Kind == refactor.ItemFile) {
+	if dst.Kind == refactor.ItemDir || dst.Kind == refactor.ItemFile {
 		var dstPkg *packages.Package
 		if dst.Kind == refactor.ItemDir {
 			for _, pkg := range snap.Packages() {
@@ -118,13 +116,14 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 
 	// Otherwise, renaming to program identifier, which must not exist.
 	if len(items) != 2 {
-		snap.ErrorAt(token.NoPos, "cannot move multiple items to %s", args[len(args)-1])
+		snap.ErrorAt(token.NoPos, "cannot move multiple items to %s", dst.Name)
 		return
 	}
 
-	old, newItem, newPath := items[0], items[1], args[1]
+	old, newItem := items[0], items[1]
 
 	var newOuter *refactor.Item
+	newPath := newItem.Name
 	newPrefix, newName, ok := cutLast(newPath, ".")
 	if ok {
 		newOuter = snap.Lookup(newPrefix)
@@ -133,7 +132,7 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 			return
 		}
 	} else {
-		newName = newPath
+		newName = newItem.Name
 	}
 
 	if old.Kind == refactor.ItemPos && newOuter == nil {
@@ -150,8 +149,8 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 
 	// Rename of global.
 	if old.Outer == nil && newOuter == nil {
-		if newItem != nil { // TODO
-			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
+		if newItem.Kind != refactor.ItemNotFound {
+			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newName)
 			return
 		}
 		rewriteDefn(snap, old, newName)
@@ -162,7 +161,7 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 
 	// Rename of struct field or method.
 	if old.Outer != nil && newOuter != nil && old.Outer.Obj == newOuter.Obj {
-		if newItem != nil { // TODO
+		if newItem.Kind != refactor.ItemNotFound { // TODO
 			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
 			return
 		}
@@ -196,7 +195,7 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 				structPos = typ.Obj().Pos()
 			}
 
-			if newItem == nil {
+			if newItem.Kind == refactor.ItemNotFound {
 				addStructField(snap, structPos, newName, old.Obj.Type().String())
 			}
 			removeDecl(snap, old)
@@ -224,7 +223,7 @@ func cmdMv(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
 
 	// Rename method to global function.
 	if old.Kind == refactor.ItemMethod && old.Outer.Outer == nil && old.Outer.Kind == refactor.ItemType && newOuter == nil {
-		if newItem != nil { // TODO
+		if newItem.Kind != refactor.ItemNotFound { // TODO
 			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
 			return
 		}

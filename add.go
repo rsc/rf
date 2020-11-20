@@ -7,25 +7,19 @@ package main
 import (
 	"go/ast"
 	"go/token"
-	"strings"
 
 	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
 func cmdAdd(snap *refactor.Snapshot, args string) (more []string, exp bool) {
-	for len(args) > 0 && args[0] == ' ' || args[0] == '\t' {
-		args = args[1:]
-	}
-	addr, text, _ := cutAny(args, " \t")
-	if strings.TrimSpace(text) == "" {
+	item, expr, text := snap.LookupNext(args)
+	if expr == "" {
 		snap.ErrorAt(token.NoPos, "usage: add address text...\n")
 		return
 	}
-
-	item := snap.Lookup(addr)
 	if item == nil {
-		snap.ErrorAt(token.NoPos, "add: cannot find %s", addr)
+		// Error already reported.
 		return
 	}
 

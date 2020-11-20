@@ -711,6 +711,7 @@ type ItemKind int
 
 const (
 	_ ItemKind = iota
+	ItemNotFound
 	ItemFile
 	ItemDir
 	ItemConst
@@ -724,6 +725,8 @@ const (
 
 func (k ItemKind) String() string {
 	switch k {
+	case ItemNotFound:
+		return "not found"
 	case ItemFile:
 		return "file"
 	case ItemDir:
@@ -746,31 +749,88 @@ func (k ItemKind) String() string {
 	return "???"
 }
 
-func (s *Snapshot) Lookup(expr string) *Item {
-	// Special cases for directory, file, as in "mv Thing ../newpkg".
-	if expr, addr, ok := cut(expr, ":"); ok {
-		item := s.Lookup(expr)
-		if item == nil {
-			return nil
-		}
-		if item.Kind == ItemFile {
-			_, f := s.FileByName(item.Name)
-			base, eof := s.FileRange(f.Package)
-			text := s.Text(base, eof)
-			lo, hi, err := addrToByteRange(addr, 0, text)
-			if err != nil {
-				s.ErrorAt(token.NoPos, "cannot evaluate address %s: %v", addr, err)
-				panic("bad addr")
-			}
-			return &Item{
-				Kind:  ItemPos,
-				Outer: item,
-				Pos:   base + token.Pos(lo),
-				End:   base + token.Pos(hi),
-			}
-		}
-		panic("bad addr")
+func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
+	args = strings.TrimLeft(args, " \t\n")
+	if args == "" {
+		return nil, "", ""
 	}
+	expr := args
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case ' ', '\t', '\n':
+			expr, rest := expr[:i], args[i+1:]
+			return s.Lookup(expr), expr, rest
+		case ':':
+			// Scan address.
+			slash := false
+			expr, addr := expr[:i], expr[i+1:]
+			var rest string
+			for j := 0; j < len(addr); j++ {
+				switch addr[j] {
+				case ' ', '\t', '\n':
+					if !slash {
+						addr, rest = addr[:j], addr[j:]
+					}
+				case '/':
+					slash = !slash
+				case '\\':
+					if slash {
+						j++
+					}
+				}
+			}
+			outer := expr
+			expr = outer + ":" + addr
+			if slash {
+				s.ErrorAt(token.NoPos, "unterminated text range: %v:%v", expr)
+				return nil, expr, ""
+			}
+			item := s.Lookup(outer)
+			if item == nil {
+				return nil, expr, ""
+			}
+			switch item.Kind {
+			default:
+				s.ErrorAt(token.NoPos, "cannot apply text range to %v", item.Kind)
+				return nil, expr, ""
+			case ItemFile:
+				_, f := s.FileByName(item.Name)
+				base, eof := s.FileRange(f.Package)
+				text := s.Text(base, eof)
+				lo, hi, err := addrToByteRange(addr, 0, text)
+				if err != nil {
+					s.ErrorAt(token.NoPos, "cannot evaluate address %s: %v", addr, err)
+					panic("bad addr")
+				}
+				item := &Item{
+					Kind:  ItemPos,
+					Outer: item,
+					Pos:   base + token.Pos(lo),
+					End:   base + token.Pos(hi),
+				}
+				return item, expr, rest
+			}
+		}
+	}
+	return s.Lookup(expr), expr, ""
+}
+
+func (s *Snapshot) LookupAll(args string) ([]*Item, []string) {
+	var items []*Item
+	var exprs []string
+	for {
+		item, expr, rest := s.LookupNext(args)
+		if expr == "" {
+			break
+		}
+		items = append(items, item)
+		exprs = append(exprs, expr)
+		args = rest
+	}
+	return items, exprs
+}
+
+func (s *Snapshot) Lookup(expr string) *Item {
 	if strings.Contains(expr, "/") {
 		return &Item{Kind: ItemDir, Name: expr}
 	}
@@ -780,17 +840,16 @@ func (s *Snapshot) Lookup(expr string) *Item {
 
 	name, rest, more := cut(expr, ".")
 	item := lookupInScope(s.pkgs[0].Types.Scope(), name)
-	if item == nil {
-		return nil
-	}
 	item.Name = name
+	if item.Kind == ItemNotFound {
+		return item
+	}
 	for more {
 		name, rest, more = cut(rest, ".")
 		item = lookupIn(s.pkgs[0], item, name)
-		if item == nil {
-			return nil
+		if item.Kind == ItemNotFound {
+			return item
 		}
-		item.Name = item.Outer.Name + "." + name
 	}
 	return item
 }
@@ -808,7 +867,7 @@ func lookupInScope(scope *types.Scope, expr string) *Item {
 		log.Fatalf("%s is a %T, unimplemented", expr, obj)
 		return nil
 	case nil:
-		return nil
+		return &Item{Kind: ItemNotFound}
 	case *types.TypeName:
 		return &Item{Kind: ItemType, Obj: obj}
 	case *types.Const:
@@ -822,8 +881,6 @@ func lookupInScope(scope *types.Scope, expr string) *Item {
 
 func lookupIn(p *packages.Package, outer *Item, name string) *Item {
 	switch outer.Kind {
-	case ItemConst:
-		return nil
 	case ItemType:
 		// Look for method, field.
 		return lookupType(p, outer, outer.Obj.Type(), name)
@@ -842,14 +899,13 @@ func lookupIn(p *packages.Package, outer *Item, name string) *Item {
 	case ItemFunc:
 		// Look for declaration inside function.
 		item := lookupInScope(outer.Obj.(*types.Func).Scope(), name)
-		if item != nil {
-			item.Outer = outer
-			return item
-		}
+		item.Outer = outer
+		item.Name = outer.Name + "." + name
+		return item
 	case ItemField:
 		return lookupType(p, outer, outer.Obj.Type(), name)
 	}
-	return nil
+	return &Item{Kind: ItemNotFound, Outer: outer, Name: outer.Name + "." + name}
 }
 
 func lookupType(p *packages.Package, outer *Item, typ types.Type, name string) *Item {
@@ -858,7 +914,7 @@ func lookupType(p *packages.Package, outer *Item, typ types.Type, name string) *
 		for i := 0; i < n; i++ {
 			f := tn.Method(i)
 			if f.Name() == name {
-				return &Item{Kind: ItemMethod, Obj: f, Outer: outer}
+				return &Item{Kind: ItemMethod, Obj: f, Outer: outer, Name: outer.Name + "." + name}
 			}
 		}
 		typ = tn.Underlying()
@@ -869,11 +925,11 @@ func lookupType(p *packages.Package, outer *Item, typ types.Type, name string) *
 		for i := 0; i < n; i++ {
 			f := typ.Field(i)
 			if f.Name() == name {
-				return &Item{Kind: ItemField, Obj: f, Outer: outer}
+				return &Item{Kind: ItemField, Obj: f, Outer: outer, Name: outer.Name + "." + name}
 			}
 		}
 	}
-	return nil
+	return &Item{Kind: ItemNotFound, Outer: outer, Name: outer.Name + "." + name}
 }
 
 func cut(s, sep string) (before, after string, ok bool) {

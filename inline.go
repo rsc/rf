@@ -14,29 +14,29 @@ import (
 	"rsc.io/rf/refactor"
 )
 
-func cmdInline(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
-	args := strings.Fields(argsText)
+func cmdInline(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+	args = strings.TrimLeft(args, " \t")
 	var rm map[types.Object]bool
-	if len(args) > 0 && args[0] == "-rm" {
+	if flag, rest, _ := cutAny(args, " \t"); flag == "-rm" {
 		rm = make(map[types.Object]bool)
-		args = args[1:]
+		args = rest
 	}
-	if len(args) < 1 {
+
+	items, _ := snap.LookupAll(args)
+	if len(items) == 0 {
 		snap.ErrorAt(token.NoPos, "usage: inline [-rm] decl...\n")
 		return
 	}
 
 	fix := make(map[types.Object]ast.Expr)
 
-	for _, arg := range args {
-		item := snap.Lookup(arg)
+	for _, item := range items {
 		if item == nil {
-			snap.ErrorAt(token.NoPos, "cannot find %s", arg)
 			continue
 		}
 		switch item.Kind {
 		default:
-			snap.ErrorAt(token.NoPos, "inline %s: %v not supported", arg, item.Kind)
+			snap.ErrorAt(token.NoPos, "inline %s: %v not supported", item.Name, item.Kind)
 			continue
 		case refactor.ItemConst, refactor.ItemType, refactor.ItemVar:
 			obj := item.Obj
@@ -47,7 +47,7 @@ func cmdInline(snap *refactor.Snapshot, argsText string) (more []string, exp boo
 			for i := range spec.Names {
 				if spec.Names[i] == id {
 					if i >= len(spec.Values) {
-						snap.ErrorAt(id.Pos(), "no initializer for %s", arg)
+						snap.ErrorAt(id.Pos(), "no initializer for %s", item.Name)
 						continue
 					}
 					fix[obj] = spec.Values[i]

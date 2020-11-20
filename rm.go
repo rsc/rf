@@ -9,28 +9,23 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"strings"
 
 	"rsc.io/rf/refactor"
 )
 
-func cmdRm(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
-	args := strings.Fields(argsText)
-	if len(args) < 1 {
-		snap.ErrorAt(token.NoPos, "usage: rm addr...\n")
-		return
+func cmdRm(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+	items, _ := snap.LookupAll(args)
+	if len(items) == 0 {
+		snap.ErrorAt(token.NoPos, "usage: rm old...\n")
 	}
-
 	rm := make(map[types.Object]bool)
-	for _, arg := range args {
-		item := snap.Lookup(arg)
+	for _, item := range items {
 		if item == nil {
-			snap.ErrorAt(token.NoPos, "cannot find %s", arg)
 			continue
 		}
 		switch item.Kind {
 		default:
-			snap.ErrorAt(token.NoPos, "rm %s: %v not supported", arg, item.Kind)
+			snap.ErrorAt(token.NoPos, "rm %s: %v not supported", item.Name, item.Kind)
 		case refactor.ItemPos:
 			snap.DeleteAt(item.Pos, item.End)
 		case refactor.ItemConst, refactor.ItemFunc, refactor.ItemMethod, refactor.ItemType, refactor.ItemVar:

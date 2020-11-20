@@ -8,33 +8,30 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"strings"
 
 	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
-func cmdKey(snap *refactor.Snapshot, argsText string) (more []string, exp bool) {
-	args := strings.Fields(argsText)
-	if len(args) < 1 {
+func cmdKey(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+	items, _ := snap.LookupAll(args)
+	if len(items) == 0 {
 		snap.ErrorAt(token.NoPos, "usage: key StructType...")
 		return
 	}
 
 	var fixing []types.Type
-	for _, arg := range args {
-		item := snap.Lookup(arg)
+	for _, item := range items {
 		if item == nil {
-			snap.ErrorAt(token.NoPos, "cannot find %s", arg)
 			continue
 		}
 		if item.Kind != refactor.ItemType {
-			snap.ErrorAt(token.NoPos, "%s is not a type", arg)
+			snap.ErrorAt(token.NoPos, "%s is not a type", item.Name)
 			continue
 		}
 		typ := item.Obj.(*types.TypeName).Type().(*types.Named)
 		if _, ok := typ.Underlying().(*types.Struct); !ok {
-			snap.ErrorAt(token.NoPos, "%s is not a struct type", arg)
+			snap.ErrorAt(token.NoPos, "%s is not a struct type", item.Name)
 			continue
 		}
 		fixing = append(fixing, typ)
