@@ -795,7 +795,7 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 			default:
 				s.ErrorAt(token.NoPos, "cannot apply text range to %v", item.Kind)
 				return nil, expr, ""
-			case ItemType:
+			case ItemVar, ItemType:
 				tvar := item.Obj
 				typ := tvar.Type().Underlying()
 				if ptr, ok := typ.(*types.Pointer); ok {
@@ -817,8 +817,14 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 					case *types.Named:
 						structPos = typ.Obj().Pos()
 					}
-					stack := s.SyntaxAt(structPos) // Ident TypeSpec GenDecl
-					struc := stack[1].(*ast.TypeSpec).Type.(*ast.StructType)
+					stack := s.SyntaxAt(structPos) // Ident TypeSpec GenDecl or Ident ValueSpec GenDecl
+					var struc *ast.StructType
+					switch spec := stack[1].(type) {
+					case *ast.TypeSpec:
+						struc = spec.Type.(*ast.StructType)
+					case *ast.ValueSpec:
+						struc = spec.Type.(*ast.StructType)
+					}
 					start, end = struc.Fields.Opening+1, struc.Fields.Closing
 				}
 
