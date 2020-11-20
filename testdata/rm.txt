@@ -1,0 +1,53 @@
+rm A1 B1 C1 D2 E1 F2 G3 H1 I2 J2
+-- x.go --
+package p
+
+var A1 int
+var B1 int = 1
+var C1, C2 int
+var D1, D2 int
+var E1, E2, E3 int = 1, 2, 3
+var F1, F2, F3 int = 1, 2, 3
+var G1, G2, G3 int = 1, 2, 3
+var (
+	H1 int
+)
+var (
+	I1, I2 int
+)
+var (
+	J1 int
+	J2 int
+	J3 int
+)
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,20 +1,14 @@
+ package p
+
+-var A1 int
+-var B1 int = 1
+-var C1, C2 int
+-var D1, D2 int
+-var E1, E2, E3 int = 1, 2, 3
+-var F1, F2, F3 int = 1, 2, 3
+-var G1, G2, G3 int = 1, 2, 3
++var C2 int
++var D1 int
++var E2, E3 int = 2, 3
++var F1, F3 int = 1, 3
++var G1, G2 int = 1, 2
+ var (
+-	H1 int
+-)
+-var (
+-	I1, I2 int
++	I1 int
+ )
+ var (
+ 	J1 int
+-	J2 int
+ 	J3 int
+ )

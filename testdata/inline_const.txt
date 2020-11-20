@@ -1,0 +1,23 @@
+inline C D
+-- x.go --
+package p
+
+const Cee = 1
+const Dee = 2
+const (
+	C = Cee
+	D = Dee
+	E = 3
+)
+
+var _ = C + D + E
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -8,4 +8,4 @@
+ 	E = 3
+ )
+
+-var _ = C + D + E
++var _ = Cee + Dee + E

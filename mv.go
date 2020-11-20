@@ -302,36 +302,12 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 	switch stack[1].(type) {
 	case *ast.ValueSpec:
 		spec := stack[1].(*ast.ValueSpec)
-		decl := stack[2].(*ast.GenDecl)
-
 		if len(spec.Values) > 0 {
 			snap.ErrorAt(spec.Pos(), "removing declaration would drop initializer")
-		}
-
-		if len(decl.Specs) == 1 && len(spec.Names) == 1 {
-			// Delete entire declaration.
-			// TODO: Doc comments too.
-			// TODO: Newline too. (+1 is clumsy hack)
-			snap.ReplaceAt(decl.Pos(), decl.End()+1, "")
 			return
 		}
-
-		if len(spec.Names) == 1 {
-			snap.ReplaceNode(spec, "")
-			return
-		}
-
-		for i, id := range spec.Names {
-			if id.Pos() == old.Obj.Pos() {
-				if i == 0 {
-					snap.ReplaceAt(id.Pos(), spec.Names[i+1].Pos(), "")
-				} else {
-					snap.ReplaceAt(spec.Names[i-1].End(), id.End(), "")
-				}
-				// TODO: Deal with initializer spec.Values[i]
-				return
-			}
-		}
+		removeDecls(snap, map[types.Object]bool{old.Obj: true})
+		return
 
 	case *ast.AssignStmt:
 		as := stack[1].(*ast.AssignStmt)
@@ -343,7 +319,7 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 		return
 	}
 
-	snap.ErrorAt(old.Obj.Pos(), "could not find declaration to delete")
+	snap.ErrorAt(old.Obj.Pos(), "could not find declaration for %v to delete", old.Name)
 }
 
 func addStructField(snap *refactor.Snapshot, structPos token.Pos, name string, typ string) {

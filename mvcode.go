@@ -75,7 +75,7 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 	inFiles := make(map[types.Object]*packages.Package)
 	for _, src := range srcs {
 		if src.Obj != nil {
-			for _, obj := range codeObjs(snap, src.Obj) {
+			for _, obj := range declObjs(snap, src.Obj) {
 				moves[obj] = dstPkg
 			}
 			continue
@@ -106,7 +106,7 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 		}
 		if src.Obj != nil {
 			srcPkg, srcFile := snap.FileAt(src.Obj.Pos())
-			pos, end := codeRange(snap, src.Obj)
+			pos, end := declRange(snap, src.Obj)
 			moveCode(snap, srcPkg, srcFile, pos, end, dst, dstPkg, moves)
 		}
 		switch src.Kind {
@@ -288,7 +288,7 @@ func findFile(snap *refactor.Snapshot, pkg *packages.Package, name string) *ast.
 	return nil
 }
 
-func codeRange(snap *refactor.Snapshot, obj types.Object) (pos, end token.Pos) {
+func declRange(snap *refactor.Snapshot, obj types.Object) (pos, end token.Pos) {
 	_, srcFile := snap.FileAt(obj.Pos())
 	startFile, endFile := snap.FileRange(obj.Pos())
 	text := snap.Text(startFile, endFile)
@@ -313,7 +313,7 @@ func codeRange(snap *refactor.Snapshot, obj types.Object) (pos, end token.Pos) {
 	return pos, end
 }
 
-func codeObjs(snap *refactor.Snapshot, obj types.Object) []types.Object {
+func declObjs(snap *refactor.Snapshot, obj types.Object) []types.Object {
 	srcPkg, _ := snap.FileAt(obj.Pos())
 	defs := srcPkg.TypesInfo.Defs
 	var objs []types.Object

@@ -126,6 +126,10 @@
 //
 //	key Point
 //
+// The cp command
+//
+// TODO cp is like mv but doesn't delete the source and doesn't update any references.
+//
 // The ex command
 //
 // The ex command applies rewrites based on example snippets.
@@ -160,6 +164,10 @@
 // The mv command moves and renames code.
 //
 //	mv [-f] source... destination
+//
+// When mv moves or renames code, it also updates any references
+// to use the new names or locations for the code.
+// This includes updating other packages in the current module.
 //
 // In general, mv aims to act appropriately for any sensible
 // combination of source kind and destination kind.
@@ -200,6 +208,10 @@
 //
 // TODO
 //
+// code text → new method
+//
+// TODO
+//
 // declaration → file
 //
 // If the source is a top-level declaration (const, func, method, type, var)
@@ -230,6 +242,10 @@
 // TODO
 //
 // package → package
+//
+// TODO
+//
+// The rm command
 //
 // TODO
 //
@@ -281,10 +297,12 @@ func main() {
 }
 
 var cmds = map[string]func(*refactor.Snapshot, string) ([]string, bool){
-	"add": cmdAdd,
-	"key": cmdKey,
-	"ex":  cmdEx,
-	"mv":  cmdMv,
+	"add":    cmdAdd,
+	"inline": cmdInline,
+	"key":    cmdKey,
+	"ex":     cmdEx,
+	"mv":     cmdMv,
+	"rm":     cmdRm,
 }
 
 type loader interface {
