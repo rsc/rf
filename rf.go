@@ -66,17 +66,18 @@ func run(rf *refactor.Refactor, script string) error {
 	for text != "" {
 		var line string
 		line, text, _ = cut(text, "\n")
-		line = strings.TrimSpace(line)
+		line = trimComments(line)
 		for strings.HasSuffix(line, `\`) && text != "" {
 			var l string
 			l, text, _ = cut(text, "\n")
 			line = line[:len(line)-1] + "\n" + l
-			line = strings.TrimSpace(line)
+			line = trimComments(line)
 		}
-		cmd, args, _ := cutAny(line, " \t")
-		if cmd == "" || cmd[0] == '#' {
+		line = strings.TrimLeft(line, " \t\n")
+		if line == "" {
 			continue
 		}
+		cmd, args, _ := cutAny(line, " \t")
 
 		fn := cmds[cmd]
 		if fn == nil {
@@ -155,6 +156,28 @@ func run(rf *refactor.Refactor, script string) error {
 	}
 
 	return nil // TODO snap.Write()
+}
+
+func trimComments(line string) string {
+	// Cut line at # comment, being careful not to cut inside quoted text.
+	var q byte
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; c {
+		case q:
+			q = 0
+		case '\'', '"', '`':
+			q = c
+		case '\\':
+			if q == '\'' || q == '"' {
+				i++
+			}
+		case '#':
+			if q == 0 {
+				line = line[:i]
+			}
+		}
+	}
+	return strings.TrimSpace(line)
 }
 
 var isGoIdent = regexp.MustCompile(`^[\p{L}_][\p{L}\p{Nd}_]*$`)

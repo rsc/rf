@@ -1,7 +1,7 @@
 add T.X Y int `tag`
 add C var D = 1
 add T type T1 = T
-add T1 \
+add T1 \ # comment
 	type T2 = T
 add x.go:/var/ /* hello */
 add x.go // EOF
