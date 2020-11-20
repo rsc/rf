@@ -5,8 +5,8 @@ mv S s.go
 package m
 
 var S struct{}
-var A = 1
-var C = 2
+var A int
+var C int
 -- q/q.go --
 package q
 
@@ -31,8 +31,8 @@ diff old/x.go new/x.go
  package m
 -
 -var S struct{}
--var A = 1
--var C = 2
+-var A int
+-var C int
 diff old/q/q.go new/q/q.go
 --- old/q/q.go
 +++ new/q/q.go

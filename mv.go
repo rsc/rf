@@ -387,6 +387,7 @@ Loop:
 func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 	// Convert method declaration.
 	// Insert name before receiver list.
+	srcPkg, _ := snap.FileAt(method.Pos())
 	stack := snap.SyntaxAt(method.Pos()) // FuncType Ident FuncDecl
 	decl := stack[2].(*ast.FuncDecl)
 	snap.InsertAt(decl.Recv.Opening, " "+name)
@@ -427,9 +428,13 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 			}
 
 			// Found a use to convert. Can we refer to the new name here?
-			// TODO: Add import
-			if snap.LookupAt(name, id.Pos()) != nil {
-				snap.ErrorAt(id.Pos(), "%s already in scope", name)
+			name := name
+			if pkg == srcPkg {
+				if snap.LookupAt(name, id.Pos()) != nil {
+					snap.ErrorAt(id.Pos(), "%s already in scope", name)
+				}
+			} else {
+				name = snap.NeedImport(id.Pos(), "", srcPkg.Types) + "." + name
 			}
 
 			// But what kind of use?

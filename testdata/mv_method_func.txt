@@ -1,6 +1,6 @@
-mv T.F tf
+mv T.F TF
 -- x.go --
-package p
+package m
 
 type T int
 
@@ -14,6 +14,13 @@ var _ = (*T).F(new(T), 2)
 var _ = new(T).F(2)
 
 //var _ = (*T).F
+-- sub/sub.go --
+package sub
+
+import "m"
+
+var x m.T
+var _ = x.F(1)
 -- stdout --
 diff old/x.go new/x.go
 --- old/x.go
@@ -23,7 +30,7 @@ diff old/x.go new/x.go
  type T int
 
 -func (T) F(x int) int { return 1}
-+func tf(_ T, x int) int { return 1 }
++func TF(_ T, x int) int { return 1 }
 
  // uses
 -var _ = T.F(1,2)
@@ -31,10 +38,19 @@ diff old/x.go new/x.go
 -var _ = T.F
 -var _ = (*T).F(new(T), 2)
 -var _ = new(T).F(2)
-+var _ = tf(1, 2)
-+var _ = tf(T(1), 2)
-+var _ = tf
-+var _ = tf(*new(T), 2)
-+var _ = tf(*new(T), 2)
++var _ = TF(1, 2)
++var _ = TF(T(1), 2)
++var _ = TF
++var _ = TF(*new(T), 2)
++var _ = TF(*new(T), 2)
 
  //var _ = (*T).F
+diff old/sub/sub.go new/sub/sub.go
+--- old/sub/sub.go
++++ new/sub/sub.go
+@@ -3,4 +3,4 @@
+ import "m"
+
+ var x m.T
+-var _ = x.F(1)
++var _ = m.TF(x, 1)
