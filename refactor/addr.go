@@ -6,12 +6,266 @@ package refactor
 
 import (
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/token"
+	"go/types"
+	"log"
 	"regexp"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
-// Copied from golang.org/x/tools/present/args.go.
+type Item struct {
+	Kind  ItemKind
+	Name  string
+	Outer *Item
+	Obj   types.Object
+	Pos   token.Pos
+	End   token.Pos
+}
+
+func (i *Item) Outermost() *Item {
+	for i != nil && i.Outer != nil {
+		i = i.Outer
+	}
+	return i
+}
+
+type ItemKind int
+
+const (
+	_ ItemKind = iota
+	ItemNotFound
+	ItemFile
+	ItemDir
+	ItemConst
+	ItemType
+	ItemVar
+	ItemFunc
+	ItemField
+	ItemMethod
+	ItemPos
+)
+
+func (k ItemKind) String() string {
+	switch k {
+	case ItemNotFound:
+		return "not found"
+	case ItemFile:
+		return "file"
+	case ItemDir:
+		return "dir"
+	case ItemConst:
+		return "const"
+	case ItemType:
+		return "type"
+	case ItemVar:
+		return "var"
+	case ItemFunc:
+		return "func"
+	case ItemField:
+		return "field"
+	case ItemMethod:
+		return "method"
+	case ItemPos:
+		return "text"
+	}
+	return "???"
+}
+
+// TODO: Rename Lookup to Eval - there's already a Lookup.
+
+func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
+	args = strings.TrimLeft(args, " \t\n")
+	if args == "" {
+		return nil, "", ""
+	}
+	expr := args
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case ' ', '\t', '\n':
+			expr, rest := expr[:i], args[i+1:]
+			return s.Lookup(expr), expr, rest
+		case ':':
+			// Scan address.
+			slash := false
+			expr, addr := expr[:i], expr[i+1:]
+			var rest string
+			for j := 0; j < len(addr); j++ {
+				switch addr[j] {
+				case ' ', '\t', '\n':
+					if !slash {
+						addr, rest = addr[:j], addr[j:]
+					}
+				case '/':
+					slash = !slash
+				case '\\':
+					if slash {
+						j++
+					}
+				}
+			}
+			outer := expr
+			expr = outer + ":" + addr
+			if slash {
+				s.ErrorAt(token.NoPos, "unterminated text range: %v", expr)
+				return nil, expr, ""
+			}
+			item := s.Lookup(outer)
+			if item == nil {
+				return nil, expr, ""
+			}
+			var start, end token.Pos
+			switch item.Kind {
+			default:
+				s.ErrorAt(token.NoPos, "cannot apply text range to %v", item.Kind)
+				return nil, expr, ""
+			case ItemVar, ItemType:
+				tvar := item.Obj
+				typ := tvar.Type().Underlying()
+				if ptr, ok := typ.(*types.Pointer); ok {
+					typ = ptr.Elem().Underlying()
+				}
+				switch typ.(type) {
+				default:
+					s.ErrorAt(token.NoPos, "cannot apply text range to %v %v", item.Kind, typ)
+					return nil, expr, ""
+				case *types.Struct:
+					// Finding struct type is a little tricky.
+					// Except for empty structs, we could use the pos of the first field.
+					// But an empty struct type has no pos at all, so we have to
+					// use the pos of the declaration in which the struct appears.
+					var structPos token.Pos
+					switch typ := tvar.Type().(type) {
+					case *types.Struct:
+						structPos = tvar.Pos()
+					case *types.Named:
+						structPos = typ.Obj().Pos()
+					}
+					stack := s.SyntaxAt(structPos) // Ident TypeSpec GenDecl or Ident ValueSpec GenDecl
+					var struc *ast.StructType
+					switch spec := stack[1].(type) {
+					case *ast.TypeSpec:
+						struc = spec.Type.(*ast.StructType)
+					case *ast.ValueSpec:
+						struc = spec.Type.(*ast.StructType)
+					}
+					start, end = struc.Fields.Opening+1, struc.Fields.Closing
+				}
+
+			case ItemFile:
+				_, f := s.FileByName(item.Name)
+				start, end = s.FileRange(f.Package)
+			}
+
+			text := s.Text(start, end)
+			lo, hi, err := addrToByteRange(addr, 0, text)
+			if err != nil {
+				s.ErrorAt(token.NoPos, "cannot evaluate address %s: %v", addr, err)
+				panic("bad addr")
+			}
+			item = &Item{
+				Kind:  ItemPos,
+				Outer: item,
+				Pos:   start + token.Pos(lo),
+				End:   start + token.Pos(hi),
+			}
+			return item, expr, rest
+		}
+	}
+	return s.Lookup(expr), expr, ""
+}
+
+func (s *Snapshot) LookupAll(args string) ([]*Item, []string) {
+	var items []*Item
+	var exprs []string
+	for {
+		item, expr, rest := s.LookupNext(args)
+		if expr == "" {
+			break
+		}
+		items = append(items, item)
+		exprs = append(exprs, expr)
+		args = rest
+	}
+	return items, exprs
+}
+
+func (s *Snapshot) Lookup(expr string) *Item {
+	if strings.Contains(expr, "/") {
+		return &Item{Kind: ItemDir, Name: expr}
+	}
+	if strings.HasSuffix(expr, ".go") {
+		return &Item{Kind: ItemFile, Name: expr}
+	}
+
+	name, rest, more := cut(expr, ".")
+	item := lookupInScope(s.target.Types.Scope(), name)
+	item.Name = name
+	if item.Kind == ItemNotFound {
+		return item
+	}
+	for more {
+		name, rest, more = cut(rest, ".")
+		item = lookupIn(s.target, item, name)
+		if item.Kind == ItemNotFound {
+			return item
+		}
+	}
+	return item
+}
+
+func lookupInScope(scope *types.Scope, expr string) *Item {
+	obj := scope.Lookup(expr)
+	switch obj := obj.(type) {
+	default:
+		log.Fatalf("%s is a %T, unimplemented", expr, obj)
+		return nil
+	case nil:
+		return &Item{Kind: ItemNotFound}
+	case *types.TypeName:
+		return &Item{Kind: ItemType, Obj: obj}
+	case *types.Const:
+		return &Item{Kind: ItemConst, Obj: obj}
+	case *types.Var:
+		return &Item{Kind: ItemVar, Obj: obj}
+	case *types.Func:
+		return &Item{Kind: ItemFunc, Obj: obj}
+	}
+}
+
+func lookupIn(p *Package, outer *Item, name string) *Item {
+	switch outer.Kind {
+	case ItemType:
+		// Look for method, field.
+		return lookupTypeX(p, outer, outer.Obj.Type(), name)
+	case ItemVar:
+		// If unnamed struct or interface, look in type.
+		typ := outer.Obj.Type().Underlying()
+		if ptr, ok := typ.(*types.Pointer); ok {
+			typ = ptr.Elem().Underlying()
+		}
+		switch typ := typ.(type) {
+		default:
+			fmt.Printf("LOOKUP IN %T\n", typ)
+		case *types.Struct, *types.Interface:
+			return lookupTypeX(p, outer, typ, name)
+		}
+	case ItemFunc:
+		// Look for declaration inside function.
+		item := lookupInScope(outer.Obj.(*types.Func).Scope(), name)
+		item.Outer = outer
+		item.Name = outer.Name + "." + name
+		return item
+	case ItemField:
+		return lookupTypeX(p, outer, outer.Obj.Type(), name)
+	}
+	return &Item{Kind: ItemNotFound, Outer: outer, Name: outer.Name + "." + name}
+}
+
+// Code below copied from golang.org/x/tools/present/args.go.
 
 // This file is stolen from go/src/cmd/godoc/codewalk.go.
 // It's an evaluator for the file address syntax implemented by acme and sam,
@@ -227,4 +481,28 @@ func addrRegexp(data []byte, lo, hi int, dir byte, pattern string) (int, int, er
 		return 0, 0, errors.New("no match for " + pattern)
 	}
 	return m[0], m[1], nil
+}
+
+func lookupTypeX(p *Package, outer *Item, typ types.Type, name string) *Item {
+	if tn, ok := typ.(*types.Named); ok {
+		n := tn.NumMethods()
+		for i := 0; i < n; i++ {
+			f := tn.Method(i)
+			if f.Name() == name {
+				return &Item{Kind: ItemMethod, Obj: f, Outer: outer, Name: outer.Name + "." + name}
+			}
+		}
+		typ = tn.Underlying()
+	}
+
+	if typ, ok := typ.(*types.Struct); ok {
+		n := typ.NumFields()
+		for i := 0; i < n; i++ {
+			f := typ.Field(i)
+			if f.Name() == name {
+				return &Item{Kind: ItemField, Obj: f, Outer: outer, Name: outer.Name + "." + name}
+			}
+		}
+	}
+	return &Item{Kind: ItemNotFound, Outer: outer, Name: outer.Name + "." + name}
 }

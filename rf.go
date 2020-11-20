@@ -19,7 +19,7 @@ import (
 var showDiff = flag.Bool("diff", false, "show diff instead of writing files")
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: rf [-diff] script [pkg ...]\n")
+	fmt.Fprintf(os.Stderr, "usage: rf [-diff] script\n")
 	os.Exit(2)
 }
 
@@ -30,12 +30,12 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 	args := flag.Args()
-	if len(args) < 1 {
+	if len(args) != 1 {
 		usage()
 	}
-	script, pkgs := args[0], args[1:]
+	script := args[0]
 
-	rf, err := refactor.New(".", pkgs...)
+	rf, err := refactor.New(".")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func main() {
 	}
 }
 
-var cmds = map[string]func(*refactor.Snapshot, string) ([]string, bool){
+var cmds = map[string]func(*refactor.Snapshot, string){
 	"add":    cmdAdd,
 	"inline": cmdInline,
 	"key":    cmdKey,
@@ -55,7 +55,7 @@ var cmds = map[string]func(*refactor.Snapshot, string) ([]string, bool){
 }
 
 type loader interface {
-	Load(...string) (*refactor.Snapshot, error)
+	Load() (*refactor.Snapshot, error)
 }
 
 func run(rf *refactor.Refactor, script string) error {
@@ -89,46 +89,24 @@ func run(rf *refactor.Refactor, script string) error {
 		if err != nil {
 			return err
 		}
+		if snap.Errors() != 0 {
+			return nil
+		}
 
-		more, exp := fn(snap, args)
+		targ := snap.Target()
+		if targ.Types == nil {
+			println("TARG", targ, targ.PkgPath)
+			panic("no types in target")
+		}
+
+		fn(snap, args)
 		if snap.Errors() > 0 {
 			return err
-		}
-		if len(more) > 0 {
-			snap, err = base.Load(more...)
-			if err != nil {
-				return err
-			}
-
-			var evenMore []string
-			evenMore, exp = fn(snap, args)
-			if snap.Errors() > 0 {
-				return err
-			}
-			if len(evenMore) > 0 {
-				return fmt.Errorf("%s did not converge: after %v, needs %v", cmd, more, evenMore)
-			}
-		}
-		if exp {
-			pkgs, err := rf.Importers(snap)
-			if err != nil {
-				return err
-			}
-			more = append(more, pkgs...)
-			snap, err = base.Load(more...)
-			if err != nil {
-				return err
-			}
-
-			fn(snap, args)
-			if snap.Errors() > 0 {
-				return err
-			}
 		}
 
 		snap.Gofmt()
 		base = snap
-		snap.Write() // TODO: Should not be necessary.
+		//	snap.Write() // TODO: Should not be necessary.
 	}
 
 	if snap == nil {
@@ -147,7 +125,7 @@ func run(rf *refactor.Refactor, script string) error {
 
 	// Reload packages one last time before writing,
 	// to make sure the rewrites are valid.
-	if _, err := snap.Load(snap.Modified()...); err != nil {
+	if _, err := snap.Load(); err != nil {
 		return fmt.Errorf("checking rewritten packages: %v", err)
 	}
 
@@ -155,7 +133,7 @@ func run(rf *refactor.Refactor, script string) error {
 		return nil
 	}
 
-	return nil // TODO snap.Write()
+	return snap.Write()
 }
 
 func trimComments(line string) string {

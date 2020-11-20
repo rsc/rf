@@ -13,7 +13,6 @@ import (
 	"reflect"
 	"strings"
 
-	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
@@ -45,7 +44,7 @@ func inScope(name string, obj types.Object) posChecker {
 	}
 }
 
-func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+func cmdMv(snap *refactor.Snapshot, args string) {
 	items, _ := snap.LookupAll(args)
 	if len(items) < 2 {
 		snap.ErrorAt(token.NoPos, "usage: mv old... new")
@@ -64,7 +63,7 @@ func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 
 	srcs, dst := items[:len(items)-1], items[len(items)-1]
 	if dst.Kind == refactor.ItemDir || dst.Kind == refactor.ItemFile {
-		var dstPkg *packages.Package
+		var dstPkg *refactor.Package
 		if dst.Kind == refactor.ItemDir {
 			for _, pkg := range snap.Packages() {
 				if pkg.PkgPath == dst.Name {
@@ -73,11 +72,13 @@ func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 				}
 			}
 			if dstPkg == nil {
-				return []string{dst.Name}, false
+				// TODO: Load on demand.
+				snap.ErrorAt(token.NoPos, "unknown package %s", dst.Name)
+				return
 			}
 		} else {
 			if !strings.Contains(dst.Name, "/") {
-				dstPkg = snap.Targets()[0] // TODO
+				dstPkg = snap.Target() // TODO
 			} else {
 				pkgPath := path.Dir(dst.Name)
 				for _, pkg := range snap.Packages() {
@@ -87,7 +88,9 @@ func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 					}
 				}
 				if dstPkg == nil {
-					return []string{dst.Name}, false
+					// TODO: Load on demand.
+					snap.ErrorAt(token.NoPos, "unknown package %s", dst.Name)
+					return
 				}
 				dst.Name = path.Base(dst.Name)
 			}
@@ -110,7 +113,7 @@ func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 			return
 		}
 
-		exp = mvCode(snap, srcs, dst, dstPkg)
+		mvCode(snap, srcs, dst, dstPkg)
 		return
 	}
 
@@ -155,7 +158,6 @@ func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 		}
 		rewriteDefn(snap, old, newName)
 		rewriteUses(snap, old, newName, notInScope(newName))
-		exp = token.IsExported(old.Name)
 		return
 	}
 
@@ -167,8 +169,6 @@ func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 		}
 		rewriteDefn(snap, old, newName)
 		rewriteUses(snap, old, newName, nil)
-		_, last, _ := cutLast(old.Name, ".")
-		exp = token.IsExported(last)
 		return
 	}
 
@@ -200,7 +200,6 @@ func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 			}
 			removeDecl(snap, old)
 			rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
-			exp = token.IsExported(old.Name)
 			return
 		}
 	}
@@ -228,8 +227,6 @@ func cmdMv(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 			return
 		}
 		methodToFunc(snap, old.Obj.(*types.Func), newName)
-		_, last, _ := cutLast(old.Name, ".")
-		exp = token.IsExported(last)
 		return
 	}
 
@@ -265,7 +262,7 @@ func rewriteDefn(snap *refactor.Snapshot, old *refactor.Item, new string) {
 }
 
 func rewriteUses(snap *refactor.Snapshot, old *refactor.Item, new string, checkPos posChecker) {
-	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
+	fix := func(pkg *refactor.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
 			if !ok || pkg.TypesInfo.Uses[id] != old.Obj {
@@ -282,7 +279,18 @@ func rewriteUses(snap *refactor.Snapshot, old *refactor.Item, new string, checkP
 			}
 			snap.ReplaceNode(id, new)
 		})
-	})
+	}
+	// TODO: This should be something like
+	//	snap.ForReverseDepsFiles
+	// and it should load the reverse deps on demand.
+	if !token.IsExported(old.Outermost().Name) {
+		pkg, _ := snap.FileAt(old.Obj.Pos())
+		for _, file := range pkg.Files {
+			fix(pkg, file.Syntax)
+		}
+		return
+	}
+	snap.ForEachFile(fix)
 }
 
 func StackTypes(list []ast.Node) string {
@@ -395,7 +403,7 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 	recvType := sig.Recv().Type()
 	_, recvPtr := recvType.(*types.Pointer)
 
-	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
+	snap.ForEachFile(func(pkg *refactor.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
 			if !ok || pkg.TypesInfo.Uses[id] != method {

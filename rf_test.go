@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"golang.org/x/tools/txtar"
+	"rsc.io/rf/diff"
 	"rsc.io/rf/refactor"
 )
 
@@ -59,7 +60,7 @@ func TestRun(t *testing.T) {
 			}
 
 			var stdout, stderr bytes.Buffer
-			rf, err := refactor.New(dir, ".")
+			rf, err := refactor.New(dir)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,6 +89,10 @@ func TestRun(t *testing.T) {
 				if !bytes.Equal(have, want) {
 					t.Errorf("%s:\n%s", name, have)
 					t.Errorf("want:\n%s", want)
+					d, err := diff.Diff("want", want, "have", have)
+					if err == nil {
+						t.Errorf("diff of diffs:\n%s", d)
+					}
 				}
 			}
 			cmp("stderr", stderr.Bytes(), wantStderr.Data)

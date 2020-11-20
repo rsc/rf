@@ -11,13 +11,12 @@ import (
 	"go/types"
 	"path/filepath"
 
-	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
 // transplant rewrites code, which is from src, for insertion at dst.
 // Along the way it updates any references in moves to use the new location.
-func transplant(snap *refactor.Snapshot, code string, src, dst token.Pos, moves map[types.Object]*packages.Package) string {
+func transplant(snap *refactor.Snapshot, code string, src, dst token.Pos, moves map[types.Object]*refactor.Package) string {
 	srcPkg, srcFile := snap.FileAt(src)
 	if srcFile == nil {
 		panic("lost source file")
@@ -68,11 +67,11 @@ func transplant(snap *refactor.Snapshot, code string, src, dst token.Pos, moves 
 }
 
 // mvCode moves the code described by srcs into dst.
-func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, dstPkg *packages.Package) (anyExported bool) {
+func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, dstPkg *refactor.Package) (anyExported bool) {
 	// Build list of what's moving.
 	// Keep a list of the objects in files separately, so that we can avoid moving them twice.
-	moves := make(map[types.Object]*packages.Package)
-	inFiles := make(map[types.Object]*packages.Package)
+	moves := make(map[types.Object]*refactor.Package)
+	inFiles := make(map[types.Object]*refactor.Package)
 	for _, src := range srcs {
 		if src.Obj != nil {
 			for _, obj := range declObjs(snap, src.Obj) {
@@ -84,8 +83,7 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 		default:
 			panic(fmt.Sprintf("unexpected src %v", src))
 		case refactor.ItemFile:
-			srcPkg := snap.Targets()[0] // TODO
-			srcFile := findFile(snap, srcPkg, src.Name)
+			srcPkg, srcFile := snap.FileByName(src.Name)
 			if srcFile == nil {
 				snap.ErrorAt(token.NoPos, "cannot find file %s", src.Name)
 				continue
@@ -111,15 +109,14 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 		}
 		switch src.Kind {
 		case refactor.ItemFile:
-			srcPkg := snap.Targets()[0] // TODO
-			srcFile := findFile(snap, srcPkg, src.Name)
+			srcPkg, srcFile := snap.FileByName(src.Name)
 			moveCode(snap, srcPkg, srcFile, 0, 0, dst, dstPkg, moves)
 		case refactor.ItemDir:
 			panic("mv dir not implemented")
 		}
 	}
 
-	if dstPkg != snap.Targets()[0] {
+	if dstPkg != snap.Target() {
 		var structs []types.Type
 		for obj := range moves {
 			if obj, ok := obj.(*types.TypeName); ok {
@@ -138,7 +135,7 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 	return true // TODO: better
 }
 
-func recordFileMoves(srcPkg *packages.Package, file *ast.File, dstPkg *packages.Package, moves map[types.Object]*packages.Package) {
+func recordFileMoves(srcPkg *refactor.Package, file *ast.File, dstPkg *refactor.Package, moves map[types.Object]*refactor.Package) {
 	for _, d := range file.Decls {
 		switch d := d.(type) {
 		default:
@@ -180,10 +177,10 @@ func recordFileMoves(srcPkg *packages.Package, file *ast.File, dstPkg *packages.
 }
 
 func moveCode(snap *refactor.Snapshot,
-	srcPkg *packages.Package, srcFile *ast.File,
+	srcPkg *refactor.Package, srcFile *ast.File,
 	srcPos, srcEnd token.Pos,
-	dst *refactor.Item, dstPkg *packages.Package,
-	moves map[types.Object]*packages.Package) {
+	dst *refactor.Item, dstPkg *refactor.Package,
+	moves map[types.Object]*refactor.Package) {
 	// Decide destination file.
 	if dst.Kind == refactor.ItemDir {
 		// Reduce to file case.
@@ -211,9 +208,9 @@ func moveCode(snap *refactor.Snapshot,
 	}
 
 	var dstFile *ast.File
-	for _, file := range dstPkg.Syntax {
-		if filepath.Base(snap.Position(file.Package).Filename) == dst.Name {
-			dstFile = file
+	for _, file := range dstPkg.Files {
+		if filepath.Base(snap.Position(file.Syntax.Pos()).Filename) == dst.Name {
+			dstFile = file.Syntax
 			break
 		}
 	}
@@ -234,8 +231,8 @@ func moveCode(snap *refactor.Snapshot,
 	}
 }
 
-func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*packages.Package) {
-	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
+func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*refactor.Package) {
+	snap.ForEachFile(func(pkg *refactor.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
 			if !ok {
@@ -277,15 +274,6 @@ func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*packages.Pa
 func isImportDecl(decl ast.Decl) bool {
 	d, ok := decl.(*ast.GenDecl)
 	return ok && d.Tok == token.IMPORT
-}
-
-func findFile(snap *refactor.Snapshot, pkg *packages.Package, name string) *ast.File {
-	for _, file := range pkg.Syntax {
-		if filepath.Base(snap.Position(file.Package).Filename) == name {
-			return file
-		}
-	}
-	return nil
 }
 
 func declRange(snap *refactor.Snapshot, obj types.Object) (pos, end token.Pos) {

@@ -9,11 +9,10 @@ import (
 	"go/token"
 	"go/types"
 
-	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
-func cmdKey(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+func cmdKey(snap *refactor.Snapshot, args string) {
 	items, _ := snap.LookupAll(args)
 	if len(items) == 0 {
 		snap.ErrorAt(token.NoPos, "usage: key StructType...")
@@ -41,10 +40,6 @@ func cmdKey(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 	}
 
 	keyLiterals(snap, fixing)
-
-	// Any cross-package literal references should already be keyed,
-	// so no need to consider importers.
-	return nil, false
 }
 
 func keyLiterals(snap *refactor.Snapshot, list []types.Type) {
@@ -53,7 +48,7 @@ func keyLiterals(snap *refactor.Snapshot, list []types.Type) {
 		fixing[t] = true
 	}
 
-	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
+	snap.ForEachFile(func(pkg *refactor.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
 			lit, ok := stack[0].(*ast.CompositeLit)
 			if !ok || len(lit.Elts) == 0 || lit.Incomplete {

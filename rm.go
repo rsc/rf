@@ -13,7 +13,7 @@ import (
 	"rsc.io/rf/refactor"
 )
 
-func cmdRm(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+func cmdRm(snap *refactor.Snapshot, args string) {
 	items, _ := snap.LookupAll(args)
 	if len(items) == 0 {
 		snap.ErrorAt(token.NoPos, "usage: rm old...\n")
@@ -33,10 +33,6 @@ func cmdRm(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 		}
 	}
 	removeDecls(snap, rm)
-
-	// TODO: If exported API is being deleted, maybe return exp = true
-	// so that importers are re-checked for still compiling.
-	return nil, false
 }
 
 func removeDecls(snap *refactor.Snapshot, rm map[types.Object]bool) {

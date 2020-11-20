@@ -8,11 +8,10 @@ import (
 	"go/ast"
 	"go/token"
 
-	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
-func cmdAdd(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+func cmdAdd(snap *refactor.Snapshot, args string) {
 	item, expr, text := snap.LookupNext(args)
 	if expr == "" {
 		snap.ErrorAt(token.NoPos, "usage: add address text...\n")
@@ -30,6 +29,9 @@ func cmdAdd(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 
 	case refactor.ItemConst, refactor.ItemFunc, refactor.ItemType, refactor.ItemVar, refactor.ItemField:
 		stack := snap.SyntaxAt(item.Obj.Pos())
+		if len(stack) == 0 {
+			panic("LOST " + item.Name)
+		}
 		after := stack[1]
 		switch after.(type) {
 		case *ast.ValueSpec, *ast.TypeSpec:
@@ -41,12 +43,11 @@ func cmdAdd(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 		_, pos = nodeRange(snap, after)
 
 	case refactor.ItemFile:
-		srcPkg := snap.Targets()[0] // TODO
-		srcFile := findFile(snap, srcPkg, item.Name)
+		_, srcFile := snap.FileByName(item.Name)
 		_, pos = snap.FileRange(srcFile.Package)
 
 	case refactor.ItemDir:
-		var dstPkg *packages.Package
+		var dstPkg *refactor.Package
 		for _, pkg := range snap.Packages() {
 			if pkg.PkgPath == item.Name {
 				dstPkg = pkg
@@ -54,9 +55,9 @@ func cmdAdd(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 			}
 		}
 		if dstPkg == nil {
-			return []string{item.Name}, false
+			return
 		}
-		_, pos = snap.FileRange(dstPkg.Syntax[0].Package)
+		_, pos = snap.FileRange(dstPkg.Files[0].Syntax.Pos())
 
 	case refactor.ItemPos:
 		pos = item.End
@@ -64,5 +65,4 @@ func cmdAdd(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 
 	// TODO: Is final \n a good idea?
 	snap.InsertAt(pos, text+"\n")
-	return nil, false
 }

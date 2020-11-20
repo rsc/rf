@@ -1,0 +1,56 @@
+mv X Z
+-- m.go --
+package m
+
+var X int
+-- m_test.go --
+package m
+
+var Y = X
+-- mx_test.go --
+package m_test
+
+import "m"
+
+var Z = m.X + m.Y
+-- q/q.go --
+package q
+
+import "m"
+
+var W = m.X
+-- stdout --
+diff old/m.go new/m.go
+--- old/m.go
++++ new/m.go
+@@ -1,3 +1,3 @@
+ package m
+
+-var X int
++var Z int
+diff old/m_test.go new/m_test.go
+--- old/m_test.go
++++ new/m_test.go
+@@ -1,3 +1,3 @@
+ package m
+
+-var Y = X
++var Y = Z
+diff old/mx_test.go new/mx_test.go
+--- old/mx_test.go
++++ new/mx_test.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-var Z = m.X + m.Y
++var Z = m.Z + m.Y
+diff old/q/q.go new/q/q.go
+--- old/q/q.go
++++ new/q/q.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-var W = m.X
++var W = m.Z

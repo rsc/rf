@@ -10,11 +10,10 @@ import (
 	"go/types"
 	"strings"
 
-	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/refactor"
 )
 
-func cmdInline(snap *refactor.Snapshot, args string) (more []string, exp bool) {
+func cmdInline(snap *refactor.Snapshot, args string) {
 	args = strings.TrimLeft(args, " \t")
 	var rm map[types.Object]bool
 	if flag, rest, _ := cutAny(args, " \t"); flag == "-rm" {
@@ -67,13 +66,11 @@ func cmdInline(snap *refactor.Snapshot, args string) (more []string, exp bool) {
 		removeDecls(snap, rm)
 	}
 
-	// TODO: If the names are exported, should we inline elsewhere too?
-	// Probably. Certainly if they are being deleted.
-	return nil, false
+	// TODO: Should we inline in other packages?
 }
 
 func inlineValues(snap *refactor.Snapshot, fix map[types.Object]ast.Expr) {
-	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
+	snap.ForEachFile(func(pkg *refactor.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
 			id, ok := stack[0].(*ast.Ident)
 			if !ok {

@@ -18,9 +18,7 @@ package q
 
 var Q int
 -- stderr --
--: import cycle not allowed: import stack: [m m/q m]
-x.go:3:8: could not import m/q (import cycle: [m/q m])
-ERROR: checking rewritten packages: errors found
+import cycle: m -> m/q -> m
 -- stdout --
 diff old/x.go new/x.go
 --- old/x.go

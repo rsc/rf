@@ -3,17 +3,22 @@
 // license that can be found in the LICENSE file.
 
 // Adapted from golang.org/x/tools/go/ast/astutil/imports.go
+// and from gofix's import insertion code.
 
 package refactor
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/token"
+	"go/types"
+	"sort"
 	"strconv"
+	"strings"
 )
 
-func deleteUnusedImports(s *Snapshot, fset *token.FileSet, file *ast.File) {
+func deleteUnusedImports(s *Snapshot, p *Package, file *ast.File) {
 	used := make(map[string]bool)
 	Walk(file, func(stack []ast.Node) {
 		if id, ok := stack[0].(*ast.Ident); ok && id.Obj == nil {
@@ -24,13 +29,13 @@ func deleteUnusedImports(s *Snapshot, fset *token.FileSet, file *ast.File) {
 		}
 	})
 
-	deleteImports(fset, file, func(name, pkg string) bool {
+	deleteImports(s.fset, file, func(name, pkg string) bool {
 		if name == "" {
-			p := s.imports[pkg]
-			if p == nil {
+			p1 := s.pkgByID[s.importToID(p, pkg)]
+			if p1 == nil {
 				panic("NO IMPORT: " + pkg)
 			}
-			name = p.Name()
+			name = p1.Name
 		}
 		return !used[name]
 	})
@@ -175,4 +180,222 @@ func importPath(s *ast.ImportSpec) string {
 		return ""
 	}
 	return t
+}
+
+func (s *Snapshot) NeedImport(pos token.Pos, id string, pkg *types.Package) string {
+	_, file := s.FileAt(pos)
+	if file == nil {
+		fmt.Println(s.Position(pos))
+		panic("no file")
+	}
+
+	want := id
+	if id == "" {
+		want = pkg.Name()
+	}
+	names := []string{want, want + "pkg", want + "_"}
+	for _, id := range names {
+		for _, imp := range file.Imports {
+			if importPath(imp) == pkg.Path() {
+				name := importName(imp)
+				if name == "" {
+					name = pkg.Name()
+				}
+				if name == id {
+					if obj := s.LookupAt(name, pos); obj == nil {
+						return name
+					} else if obj, ok := obj.(*types.PkgName); ok && obj.Pkg().Path() != pkg.Path() {
+						return name
+					}
+				}
+			}
+		}
+	}
+
+	want = ""
+	for _, id := range names {
+		if obj := s.LookupAt(id, pos); obj == nil {
+			want = id
+			break
+		} else if obj, ok := obj.(*types.PkgName); ok && obj.Pkg().Path() != pkg.Path() {
+			want = id
+			break
+		}
+	}
+	if want == "" {
+		s.ErrorAt(pos, "package name %s is shadowed", pkg.Name())
+		want = pkg.Name()
+	}
+
+	ed := s.editAt(file.Package)
+	key := NewImport{want, pkg}
+	for _, p := range ed.AddImports {
+		if p == key {
+			return want
+		}
+	}
+	ed.AddImports = append(ed.AddImports, key)
+	return want
+}
+
+func (s *Snapshot) addImports() {
+	for file, ed := range s.edits {
+		s.addImportList(file, ed.AddImports)
+	}
+}
+
+func (s *Snapshot) addImportList(file string, list []NewImport) {
+	_, f := s.FileByName(file)
+	if f == nil {
+		panic(file)
+	}
+	imps := f.Decls
+	for i, d := range f.Decls {
+		if d, ok := d.(*ast.GenDecl); !ok || d.Tok != token.IMPORT {
+			imps = f.Decls[:i]
+			break
+		}
+	}
+
+	// Assign each import to an import statement.
+	needs := make(map[*ast.ImportSpec][]NewImport)
+	impOf := make(map[*ast.ImportSpec]*ast.GenDecl)
+	var firstImp *ast.GenDecl
+	for _, need := range list {
+		// Find an import decl to add to.
+		// Same logic as go fix.
+		// Find an import decl to add to.
+		var (
+			bestMatch = -1
+			bestSpec  *ast.ImportSpec
+		)
+		for i := range imps {
+			imp := imps[i].(*ast.GenDecl)
+			// Do not add to import "C", to avoid disrupting the
+			// association with its doc comment, breaking cgo.
+			if declImports(imp, "C") {
+				continue
+			}
+			if firstImp == nil {
+				firstImp = imp
+			}
+
+			// Compute longest shared prefix with imports in this block.
+			for j := range imp.Specs {
+				spec := imp.Specs[j].(*ast.ImportSpec)
+				impOf[spec] = imp
+				n := matchLen(importPath(spec), need.pkg.Path())
+				if n > bestMatch {
+					bestMatch = n
+					bestSpec = spec
+				}
+			}
+		}
+		needs[bestSpec] = append(needs[bestSpec], need)
+	}
+
+	makeBlock := func(imp *ast.GenDecl) {
+		if imp.Lparen == token.NoPos {
+			imp.Lparen = imp.TokPos + token.Pos(len("import"))
+			s.InsertAt(imp.Lparen, "(")
+			imp.Rparen = imp.End()
+			s.InsertAt(imp.Rparen+1, ")") // TODO: skip over comment; the +1 is to avoid conflict with the InsertAt in needs[nil] below
+		}
+	}
+	// Add imports near each target spec.
+	for i := range imps {
+		imp := imps[i].(*ast.GenDecl)
+		for j := range imp.Specs {
+			spec := imp.Specs[j].(*ast.ImportSpec)
+			if needs[spec] == nil {
+				continue
+			}
+			makeBlock(impOf[spec])
+			for _, need := range needs[spec] {
+				id := need.id
+				if id == need.pkg.Name() {
+					id = ""
+				}
+				s.InsertAt(spec.Pos(), fmt.Sprintf("%s %q\n", id, need.pkg.Path()))
+			}
+		}
+	}
+
+	if needs[nil] != nil {
+		// Imports we didn't know what to do with.
+		// Add new block to first (non-C) import, if any.
+		var buf bytes.Buffer
+		kind := -1
+		all := needs[nil]
+		sort.Slice(all, func(i, j int) bool {
+			if ki, kj := pathKind(all[i].pkg.Path()), pathKind(all[j].pkg.Path()); ki != kj {
+				return ki < kj
+			}
+			return all[i].pkg.Path() < all[j].pkg.Path()
+		})
+		for _, need := range all {
+			if k := pathKind(need.pkg.Path()); k != kind {
+				buf.WriteString("\n")
+				kind = k
+			}
+			id := need.id
+			if id == need.pkg.Name() {
+				id = ""
+			}
+			fmt.Fprintf(&buf, "%s %q\n", id, need.pkg.Path())
+		}
+		imp := firstImp
+		if imp != nil {
+			makeBlock(imp)
+			s.InsertAt(imp.Rparen, buf.String())
+		} else {
+			pos := f.Name.End()
+			if len(imps) > 0 {
+				pos = imps[len(imps)-1].End()
+			}
+			if len(needs[nil]) == 1 {
+				s.InsertAt(pos, "\nimport "+buf.String()[1:])
+			} else {
+				s.InsertAt(pos, "\nimport ("+buf.String()+")")
+			}
+		}
+	}
+}
+
+// declImports reports whether gen contains an import of path.
+func declImports(gen *ast.GenDecl, path string) bool {
+	if gen.Tok != token.IMPORT {
+		return false
+	}
+	for _, spec := range gen.Specs {
+		impspec := spec.(*ast.ImportSpec)
+		if importPath(impspec) == path {
+			return true
+		}
+	}
+	return false
+}
+
+// matchLen returns the length of the longest prefix shared by x and y.
+func matchLen(x, y string) int {
+	if pathKind(x) != pathKind(y) {
+		return -1
+	}
+
+	i := 0
+	for i < len(x) && i < len(y) && x[i] == y[i] {
+		i++
+	}
+	return i
+}
+
+func pathKind(x string) int {
+	first, _, _ := cut(x, "/")
+	if strings.Contains(first, ".") {
+		return 2
+	}
+	if first == "cmd" {
+		return 1
+	}
+	return 0
 }

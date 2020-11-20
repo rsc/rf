@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/tools/go/packages"
 	"rsc.io/rf/edit"
 	"rsc.io/rf/refactor"
 )
@@ -24,13 +23,10 @@ type example struct {
 	new ast.Node
 }
 
-func cmdEx(snap *refactor.Snapshot, text string) (more []string, exp bool) {
-	more, code, err := parseEx(snap, text)
+func cmdEx(snap *refactor.Snapshot, text string) {
+	code, err := parseEx(snap, text)
 	if err != nil {
 		snap.ErrorAt(token.NoPos, "ex: %v", err)
-		return
-	}
-	if len(more) > 0 {
 		return
 	}
 
@@ -47,11 +43,11 @@ func cutGo(text, sep string) (before, after string, ok bool, err error) {
 	return before, after, ok, nil
 }
 
-func parseEx(snap *refactor.Snapshot, text string) (more []string, code string, err error) {
+func parseEx(snap *refactor.Snapshot, text string) (code string, err error) {
 	fset := token.NewFileSet()
 	var buf bytes.Buffer
-	if len(snap.Targets()) == 1 {
-		fmt.Fprintf(&buf, "package %s\n", snap.Targets()[0].Types.Name())
+	if true { // TODO: single vs multiple targets
+		fmt.Fprintf(&buf, "package %s\n", snap.Target().Types.Name())
 	} else {
 		fmt.Fprintf(&buf, "package ex\n")
 	}
@@ -60,7 +56,7 @@ func parseEx(snap *refactor.Snapshot, text string) (more []string, code string, 
 	for text != "" {
 		stmt, rest, _, err := cutGo(text, ";")
 		if err != nil {
-			return nil, "", err
+			return "", err
 		}
 		text = rest
 		stmt = strings.TrimSpace(stmt)
@@ -69,15 +65,15 @@ func parseEx(snap *refactor.Snapshot, text string) (more []string, code string, 
 		}
 		switch kw := strings.Fields(stmt)[0]; kw {
 		case "package", "type", "func", "const":
-			return nil, "", fmt.Errorf("%s declaration not allowed", kw)
+			return "", fmt.Errorf("%s declaration not allowed", kw)
 
 		case "defer", "for", "go", "if", "return", "select", "switch":
-			return nil, "", fmt.Errorf("%s statement not allowed", kw)
+			return "", fmt.Errorf("%s statement not allowed", kw)
 
 		case "import":
 			file, err := parser.ParseFile(fset, "ex.go", "package p;"+stmt, 0)
 			if err != nil {
-				return nil, "", fmt.Errorf("parsing %s: %v", stmt, err)
+				return "", fmt.Errorf("parsing %s: %v", stmt, err)
 			}
 			imp := file.Imports[0]
 			pkg := importPath(imp)
@@ -88,16 +84,16 @@ func parseEx(snap *refactor.Snapshot, text string) (more []string, code string, 
 				}
 			}
 			if !have {
-				more = append(more, pkg)
+				return "", fmt.Errorf("import %q not available", pkg)
 			}
 			if !importOK {
-				return nil, "", fmt.Errorf("parsing %s: import too late", stmt)
+				return "", fmt.Errorf("parsing %s: import too late", stmt)
 			}
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
 		case "var":
 			if _, err := parser.ParseExpr("func() {" + stmt + "}"); err != nil {
-				return nil, "", fmt.Errorf("parsing %s: %v", stmt, err)
+				return "", fmt.Errorf("parsing %s: %v", stmt, err)
 			}
 			if importOK {
 				fmt.Fprintf(&buf, "func _() {\n")
@@ -111,7 +107,7 @@ func parseEx(snap *refactor.Snapshot, text string) (more []string, code string, 
 			// because we already processed it once.
 			before, after, ok, _ := cutGo(stmt, "->")
 			if !ok {
-				return nil, "", fmt.Errorf("parsing: %s: missing -> in rewrite", stmt)
+				return "", fmt.Errorf("parsing: %s: missing -> in rewrite", stmt)
 			}
 			// TODO: parse stmt / parse expr
 			if importOK {
@@ -122,10 +118,10 @@ func parseEx(snap *refactor.Snapshot, text string) (more []string, code string, 
 		}
 	}
 	if importOK {
-		return nil, "", fmt.Errorf("no example rewrites")
+		return "", fmt.Errorf("no example rewrites")
 	}
 	fmt.Fprintf(&buf, "}\n")
-	return more, buf.String(), nil
+	return buf.String(), nil
 }
 
 func checkEx(snap *refactor.Snapshot, code string) ([]example, error) {
@@ -157,8 +153,8 @@ func checkEx(snap *refactor.Snapshot, code string) ([]example, error) {
 
 	var info *types.Info
 	var typesPkg *types.Package
-	if len(snap.Targets()) == 1 {
-		p := snap.Targets()[0]
+	if true { // TODO single vs double
+		p := snap.Target()
 		info = p.TypesInfo
 		typesPkg = p.Types
 	} else {
@@ -233,7 +229,7 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 
 	var avoid map[ast.Node]bool
 
-	snap.ForEachTargetFile(func(target *packages.Package, file *ast.File) {
+	snap.ForEachTargetFile(func(target *refactor.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
 			if m.match(pattern, stack[0]) {
 				// Do not apply substitution in its own definition.
