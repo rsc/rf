@@ -1,6 +1,6 @@
 #!/bin/bash
 
-help="usage: git-generate
+help="usage: git-generate [-conflict]
 
 git-generate regenerates a commit from a script kept in the commit message.
 
@@ -20,6 +20,11 @@ For example, a commit message might say:
 To regenerate the commit, git-generate resets the working file state to before
 the commit and then runs the script. The script runs using 'bash -e', so any
 single command failing will abort the generation.
+
+When a merge conflict occurs while rebasing, git does not stop with the
+conflicting commit at the top, so git-generate will not find it by default.
+The -conflict flag tells git-generate to look for the script in the upcoming
+(conflicting) commit.
 "
 
 if [ "$1" = "-help" -o "$1" = "-h" ]; then
@@ -27,8 +32,14 @@ if [ "$1" = "-help" -o "$1" = "-h" ]; then
 	exit 0
 fi
 
+conflict=false
+if [ "$1" = "-conflict" ]; then
+	conflict=true
+	shift
+fi
+
 if [ $# != 0 ]; then
-	echo >&2 'usage: git-generate'
+	echo >&2 'usage: git-generate [-conflict]'
 	echo >&2 '       git-generate -help'
 	exit 2
 fi
@@ -40,14 +51,17 @@ fi
 set -e
 gitdir=$(git rev-parse --show-toplevel)
 what=HEAD
-if [ -e $gitdir/.git/rebase-merge/stopped-sha ]; then
+if $conflict; then
+	if ! [ -e $gitdir/.git/rebase-merge/stopped-sha ]; then
+		echo >&2 "git-generate: no merge conflict in progress"
+		exit 2
+	fi
 	what=$(cat $gitdir/.git/rebase-merge/stopped-sha)
 	short=$(echo $what | cut -c 1-8)
 	echo >&2 "git-generate: using $short to resolve merge conflict"
 fi
 msg=$(mktemp /tmp/replayXXXXXX)
 git log -n1 $what | sed -n 's/^    //p' | sed -n '/^ *\[git-generate\]$/,$p' | sed '1d; /Change-Id:/d' | grep -v Change-Id: >$msg
-ls -l $msg
 if ! [ -s $msg ]; then
 	echo >&2 'git-generate: no script found in commit'
 	exit 2
@@ -58,7 +72,7 @@ now=$(git rev-parse HEAD)
 # Reset files to HEAD^ but keep branch itself at HEAD.
 # For a brief moment HEAD is pointing at HEAD^, which is unfortunate.
 # It would be very nice if there were some single command to do this pair.
-if [ what = HEAD ]; then
+if [ "$what" = HEAD ]; then
 	git reset -q --hard 'HEAD^'
 	git reset -q $now
 else
