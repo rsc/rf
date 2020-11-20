@@ -304,6 +304,10 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 		spec := stack[1].(*ast.ValueSpec)
 		decl := stack[2].(*ast.GenDecl)
 
+		if len(spec.Values) > 0 {
+			snap.ErrorAt(spec.Pos(), "removing declaration would drop initializer")
+		}
+
 		if len(decl.Specs) == 1 && len(spec.Names) == 1 {
 			// Delete entire declaration.
 			// TODO: Doc comments too.

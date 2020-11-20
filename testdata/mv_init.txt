@@ -1,0 +1,7 @@
+mv X V.F
+-- x.go --
+package p
+var X = 1
+var V struct{}
+-- stderr --
+x.go:2:5: removing declaration would drop initializer
