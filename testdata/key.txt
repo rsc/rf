@@ -1,0 +1,19 @@
+key T
+-- x.go --
+package p
+
+type T struct {x, Y int}
+
+var _ = []T{{1,2},{3,4}}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,5 +1,5 @@
+ package p
+
+-type T struct {x, Y int}
++type T struct{ x, Y int }
+
+-var _ = []T{{1,2},{3,4}}
++var _ = []T{{x: 1, Y: 2}, {x: 3, Y: 4}}

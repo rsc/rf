@@ -47,6 +47,7 @@ func main() {
 
 var cmds = map[string]func(*refactor.Snapshot, string) ([]string, bool){
 	"add": cmdAdd,
+	"key": cmdKey,
 	"ex":  cmdEx,
 	"mv":  cmdMv,
 }
