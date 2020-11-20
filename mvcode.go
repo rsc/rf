@@ -119,6 +119,20 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 		}
 	}
 
+	if dstPkg != snap.Targets()[0] {
+		var structs []types.Type
+		for obj := range moves {
+			if obj, ok := obj.(*types.TypeName); ok {
+				typ := obj.Type()
+				if _, ok := typ.Underlying().(*types.Struct); ok {
+					structs = append(structs, typ)
+				}
+			}
+		}
+		if len(structs) > 0 {
+			keyLiterals(snap, structs)
+		}
+	}
 	rewritePkgRefs(snap, moves)
 
 	return true // TODO: better

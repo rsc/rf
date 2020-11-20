@@ -21,7 +21,7 @@ func cmdKey(snap *refactor.Snapshot, argsText string) (more []string, exp bool) 
 		return
 	}
 
-	fixing := make(map[types.Type]bool)
+	var fixing []types.Type
 	for _, arg := range args {
 		item := snap.Lookup(arg)
 		if item == nil {
@@ -37,13 +37,26 @@ func cmdKey(snap *refactor.Snapshot, argsText string) (more []string, exp bool) 
 			snap.ErrorAt(token.NoPos, "%s is not a struct type", arg)
 			continue
 		}
-		fixing[typ] = true
+		fixing = append(fixing, typ)
 	}
 	if snap.Errors() > 0 {
 		return
 	}
 
-	snap.ForEachTargetFile(func(pkg *packages.Package, file *ast.File) {
+	keyLiterals(snap, fixing)
+
+	// Any cross-package literal references should already be keyed,
+	// so no need to consider importers.
+	return nil, false
+}
+
+func keyLiterals(snap *refactor.Snapshot, list []types.Type) {
+	fixing := make(map[types.Type]bool)
+	for _, t := range list {
+		fixing[t] = true
+	}
+
+	snap.ForEachFile(func(pkg *packages.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
 			lit, ok := stack[0].(*ast.CompositeLit)
 			if !ok || len(lit.Elts) == 0 || lit.Incomplete {
@@ -68,6 +81,4 @@ func cmdKey(snap *refactor.Snapshot, argsText string) (more []string, exp bool) 
 			}
 		})
 	})
-
-	return nil, false
 }
