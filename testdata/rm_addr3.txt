@@ -1,0 +1,23 @@
+rm T.Main:/hello/-+
+-- x.go --
+package p
+
+func (*T) Main() {
+	hello()
+}
+
+func hello() {}
+
+type T int
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +1,6 @@
+ package p
+
+ func (*T) Main() {
+-	hello()
+ }
+
+ func hello() {}

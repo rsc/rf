@@ -97,15 +97,16 @@ func (s *Snapshot) editAt(pos token.Pos) *Edit {
 }
 
 func (s *Snapshot) bufferAt(pos token.Pos) *Buffer {
-	b := s.editAt(pos).Buffer
-	if b == nil {
-		panic("bufferAt")
-	}
-	return b
+	return s.editAt(pos).Buffer
 }
 
 func (s *Snapshot) ReplaceAt(lo, hi token.Pos, repl string) {
-	s.bufferAt(lo).Replace(lo, hi, repl)
+	b := s.bufferAt(lo)
+	if b == nil {
+		// File is being deleted
+		return
+	}
+	b.Replace(lo, hi, repl)
 }
 
 func (s *Snapshot) InsertAt(pos token.Pos, repl string) {

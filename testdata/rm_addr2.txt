@@ -1,0 +1,21 @@
+rm Main:/hello/-+
+-- x.go --
+package p
+
+func Main() {
+	hello()
+}
+
+func hello() {}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +1,6 @@
+ package p
+
+ func Main() {
+-	hello()
+ }
+
+ func hello() {}

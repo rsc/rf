@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"go/types"
 	"log"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -122,6 +123,13 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 			default:
 				s.ErrorAt(token.NoPos, "cannot apply text range to %v", item.Kind)
 				return nil, expr, ""
+
+			case ItemFunc, ItemMethod:
+				fvar := item.Obj
+				stack := s.SyntaxAt(fvar.Pos()) // FuncType Ident FuncDecl
+				decl := stack[2].(*ast.FuncDecl)
+				start, end = decl.Body.Lbrace+1, decl.Body.Rbrace
+
 			case ItemVar, ItemType:
 				tvar := item.Obj
 				typ := tvar.Type().Underlying()
@@ -164,7 +172,6 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 			lo, hi, err := addrToByteRange(addr, 0, text)
 			if err != nil {
 				s.ErrorAt(token.NoPos, "cannot evaluate address %s: %v", addr, err)
-				panic("bad addr")
 			}
 			item = &Item{
 				Kind:  ItemPos,
@@ -505,4 +512,12 @@ func lookupTypeX(p *Package, outer *Item, typ types.Type, name string) *Item {
 		}
 	}
 	return &Item{Kind: ItemNotFound, Outer: outer, Name: outer.Name + "." + name}
+}
+
+func StackTypes(list []ast.Node) string {
+	var types []reflect.Type
+	for _, n := range list {
+		types = append(types, reflect.TypeOf(n))
+	}
+	return fmt.Sprint(types)
 }
