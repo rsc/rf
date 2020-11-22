@@ -21,7 +21,7 @@ func cmdInline(snap *refactor.Snapshot, args string) {
 		args = rest
 	}
 
-	items, _ := snap.LookupAll(args)
+	items, _ := snap.EvalList(args)
 	if len(items) == 0 {
 		snap.ErrorAt(token.NoPos, "usage: inline [-rm] decl...\n")
 		return

@@ -47,6 +47,7 @@ func main() {
 
 var cmds = map[string]func(*refactor.Snapshot, string){
 	"add":    cmdAdd,
+	"debug":  cmdDebug,
 	"inline": cmdInline,
 	"key":    cmdKey,
 	"ex":     cmdEx,
@@ -63,6 +64,7 @@ func run(rf *refactor.Refactor, script string) error {
 	var snap *refactor.Snapshot
 
 	text := script
+	lastCmd := ""
 	for text != "" {
 		var line string
 		line, text, _ = cut(text, "\n")
@@ -79,6 +81,10 @@ func run(rf *refactor.Refactor, script string) error {
 		}
 		cmd, args, _ := cutAny(line, " \t")
 
+		if rf.Debug["trace"] != "" {
+			fmt.Fprintf(os.Stderr, "> %s\n", strings.ReplaceAll(line, "\n", "\\\n"))
+		}
+
 		fn := cmds[cmd]
 		if fn == nil {
 			return fmt.Errorf("unknown command %s", cmd)
@@ -89,9 +95,25 @@ func run(rf *refactor.Refactor, script string) error {
 		if err != nil {
 			return err
 		}
-		if snap.Errors() != 0 {
-			return nil
+		if snap.Errors() > 0 {
+			if lastCmd == "" {
+				return fmt.Errorf("errors found before executing script")
+			}
+			base := base.(*refactor.Snapshot)
+			if rf.ShowDiff {
+				if d, err := base.Diff(); err == nil {
+					rf.Stdout.Write(d)
+				}
+			} else {
+				base.Write()
+			}
+			return fmt.Errorf("errors found after executing: %s", lastCmd)
 		}
+		x, _, ok := cut(line, "\n")
+		if ok {
+			x += " \\ ..."
+		}
+		lastCmd = x
 
 		targ := snap.Target()
 		if targ.Types == nil {
@@ -106,7 +128,6 @@ func run(rf *refactor.Refactor, script string) error {
 
 		snap.Gofmt()
 		base = snap
-		//	snap.Write() // TODO: Should not be necessary.
 	}
 
 	if snap == nil {
@@ -187,4 +208,14 @@ func cutLast(s, sep string) (before, after string, ok bool) {
 		return s[:i], s[i+len(sep):], true
 	}
 	return s, "", false
+}
+
+func cmdDebug(snap *refactor.Snapshot, text string) {
+	for _, f := range strings.Fields(text) {
+		key, val, ok := cut(f, "=")
+		if !ok {
+			val = "1"
+		}
+		snap.Refactor().Debug[key] = val
+	}
 }

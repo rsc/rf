@@ -14,6 +14,7 @@ import (
 	"go/types"
 	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -126,12 +127,8 @@ func (s *Snapshot) DeleteFile(pos token.Pos) {
 	s.edits[name] = &Edit{Name: name, Delete: true}
 }
 
-func pkgDirX(s *Snapshot, pkg *Package) string {
-	return filepath.Dir(s.Position(pkg.Files[0].Syntax.Package).Filename)
-}
-
 func (s *Snapshot) CreateFile(p *Package, name, text string) *ast.File {
-	name = s.r.shortPath(filepath.Join(pkgDirX(s, p), name))
+	name = s.r.shortPath(filepath.Join(p.Dir, name))
 	// TODO
 	if text == "" {
 		text = "package " + p.Types.Name() + "\n"
@@ -156,6 +153,34 @@ func (s *Snapshot) CreateFile(p *Package, name, text string) *ast.File {
 	})
 	s.files[name] = ed.File
 	return syntax
+}
+
+func (s *Snapshot) CreatePackage(pkgpath string) (*Package, error) {
+
+	if pkgpath == "." || strings.HasPrefix(pkgpath, "./") || strings.HasPrefix(pkgpath, "../") {
+		pkgpath = path.Join(s.target.PkgPath, pkgpath)
+	}
+
+	dir, err := s.r.PkgDir(pkgpath)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := os.Stat(dir); err == nil {
+		return nil, fmt.Errorf("%s exists but not loaded", pkgpath)
+	}
+
+	p := &Package{
+		Name:            path.Base(pkgpath),
+		Dir:             dir,
+		ID:              pkgpath,
+		PkgPath:         pkgpath,
+		InCurrentModule: true,
+	}
+	p.Types = types.NewPackage(p.PkgPath, p.Name)
+	s.pkgByID[p.ID] = p
+	s.packages = append(s.packages, p)
+	return p, nil
 }
 
 func (s *Snapshot) currentBytes(name string) []byte {
@@ -242,22 +267,33 @@ func (s *Snapshot) Write() error {
 		return names[i] < names[j]
 	})
 
+	created := make(map[string]int)
 	failed := false
 	for _, name := range names {
 		new := s.currentBytes(name)
-		if new == nil {
-			continue
-		}
 		old := s.oldBytes(name)
 		if bytes.Equal(old, new) {
 			continue
 		}
 		var err error
-		ed := s.edits[name]
-		if ed != nil && ed.Delete {
+		if len(new) == 0 {
 			err = os.Remove(name)
 		} else {
-			err = ioutil.WriteFile(name, new, 0666)
+			dir := filepath.Dir(name)
+			if created[dir] == 0 {
+				created[dir] = 1
+				if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+					if err := os.MkdirAll(dir, 0777); err != nil {
+						fmt.Fprintf(s.r.Stderr, "%s\n", err)
+						failed = true
+						created[dir] = 2
+						continue
+					}
+				}
+			}
+			if created[dir] == 1 {
+				err = ioutil.WriteFile(name, new, 0666)
+			}
 		}
 		if err != nil {
 			fmt.Fprintf(s.r.Stderr, "%s\n", err)
@@ -279,9 +315,7 @@ func (s *Snapshot) Modified() []string {
 			continue
 		}
 		for _, f := range p.Files {
-			file := f.Syntax
-			name := s.File(file.Package)
-			if _, ok := s.edits[name]; ok {
+			if s.edits[f.Name] != nil {
 				seen[path] = true
 				paths = append(paths, path)
 				break
@@ -295,9 +329,7 @@ func (s *Snapshot) Gofmt() {
 	s.addImports()
 	for _, p := range s.packages {
 		for _, f := range p.Files {
-			file := f.Syntax
-			name := s.File(file.Package)
-			ed := s.edits[name]
+			ed := s.edits[f.Name]
 			if ed == nil || ed.Delete {
 				continue
 			}

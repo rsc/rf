@@ -1,6 +1,6 @@
 mv x.go y.go
 mv y.go z.go
-mv z.go m/q
+mv z.go ./q
 -- x.go --
 // Comment
 
@@ -8,8 +8,6 @@ package m
 
 // F is only fair.
 func F() int { return 0 }
--- q/q.go --
-package q
 -- stdout --
 diff old/q/z.go new/q/z.go
 --- old/q/z.go

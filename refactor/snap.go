@@ -84,6 +84,8 @@ type buildCache struct {
 	files map[string]*File
 }
 
+func (s *Snapshot) Refactor() *Refactor { return s.r }
+
 func (s *Snapshot) importToID(p *Package, imp string) string {
 	// Make sure all packages import the test version of the target,
 	// because its objects are what we will be looking for to apply
@@ -164,6 +166,23 @@ func (r *Refactor) Load() (*Snapshot, error) {
 		return nil, fmt.Errorf("no module found for " + dir)
 	}
 	r.modRoot = filepath.Dir(mod)
+
+	cmd = exec.Command("go", "mod", "edit", "-json")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "PWD="+dir)
+	js, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("loading module: %v\n%s", err, bmod)
+	}
+	var m struct {
+		Module struct {
+			Path string
+		}
+	}
+	if err := json.Unmarshal(js, &m); err != nil {
+		return nil, fmt.Errorf("loading module: %v\n%s", err, bmod)
+	}
+	r.modPath = m.Module.Path
 
 	cmd = exec.Command("go", "list", "-e", "-json", "-compiled", "-export", "-test", "-deps", "./...")
 	cmd.Dir = r.modRoot

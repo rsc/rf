@@ -209,6 +209,10 @@ func moveCode(snap *refactor.Snapshot,
 
 	var dstFile *ast.File
 	for _, file := range dstPkg.Files {
+		if file.Syntax == nil {
+			// File was deleted.
+			continue
+		}
 		if filepath.Base(snap.Position(file.Syntax.Pos()).Filename) == dst.Name {
 			dstFile = file.Syntax
 			break
@@ -216,7 +220,7 @@ func moveCode(snap *refactor.Snapshot,
 	}
 	if dstFile == nil {
 		text := string(snap.Text(srcStart, srcHdrEnd))
-		text = text[:srcFile.Name.Pos()-srcStart] + dstPkg.Types.Name() + text[srcFile.Name.End()-srcStart:]
+		text = text[:srcFile.Name.Pos()-srcStart] + dstPkg.Name + text[srcFile.Name.End()-srcStart:]
 		dstFile = snap.CreateFile(dstPkg, dst.Name, text)
 	}
 	_, dstPos := snap.FileRange(dstFile.Package)

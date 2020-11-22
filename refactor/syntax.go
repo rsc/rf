@@ -92,6 +92,9 @@ func (s *Snapshot) FileAt(pos token.Pos) (*Package, *ast.File) {
 
 	for _, p := range s.packages {
 		for _, file := range p.Files {
+			if file.Syntax == nil {
+				continue
+			}
 			tfile := s.fset.File(file.Syntax.Pos())
 			if file == f {
 				start := token.Pos(tfile.Base())
@@ -115,6 +118,9 @@ func (s *Snapshot) FileAt(pos token.Pos) (*Package, *ast.File) {
 func (s *Snapshot) LookupAt(name string, pos token.Pos) types.Object {
 	for _, p := range s.packages {
 		for _, file := range p.Files {
+			if file.Syntax == nil {
+				continue
+			}
 			f := file.Syntax
 			if f.Pos() <= pos && pos < f.End() {
 				_, obj := p.TypesInfo.Scopes[f].Innermost(pos).LookupParent(name, pos)
@@ -166,28 +172,25 @@ func (s *Snapshot) ReplaceNode(n ast.Node, repl string) {
 func (s *Snapshot) ForEachFile(f func(pkg *Package, file *ast.File)) {
 	seen := make(map[string]bool)
 	for _, p := range s.packages {
+		if p.TypesInfo == nil {
+			// Package newly created.
+			continue
+		}
 		for _, file := range p.Files {
-			syntax := file.Syntax
-			filename := s.Position(syntax.Package).Filename
-			if seen[filename] {
+			if seen[file.Name] || file.Syntax == nil {
 				continue
 			}
-			seen[filename] = true
-			f(p, syntax)
+			seen[file.Name] = true
+			f(p, file.Syntax)
 		}
 	}
 }
 
 func (s *Snapshot) ForEachTargetFile(f func(pkg *Package, file *ast.File)) {
-	seen := make(map[string]bool)
 	p := s.target
 	for _, file := range p.Files {
-		syntax := file.Syntax
-		filename := s.Position(syntax.Package).Filename
-		if seen[filename] {
-			continue
+		if file.Syntax != nil {
+			f(p, file.Syntax)
 		}
-		seen[filename] = true
-		f(p, syntax)
 	}
 }

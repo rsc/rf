@@ -45,7 +45,7 @@ func inScope(name string, obj types.Object) posChecker {
 }
 
 func cmdMv(snap *refactor.Snapshot, args string) {
-	items, _ := snap.LookupAll(args)
+	items, _ := snap.EvalList(args)
 	if len(items) < 2 {
 		snap.ErrorAt(token.NoPos, "usage: mv old... new")
 		return
@@ -72,9 +72,12 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 				}
 			}
 			if dstPkg == nil {
-				// TODO: Load on demand.
-				snap.ErrorAt(token.NoPos, "unknown package %s", dst.Name)
-				return
+				p, err := snap.CreatePackage(dst.Name)
+				if err != nil {
+					snap.ErrorAt(token.NoPos, "mv ..., %s: %v", dst.Name, err)
+					return
+				}
+				dstPkg = p
 			}
 		} else {
 			if !strings.Contains(dst.Name, "/") {
@@ -129,7 +132,7 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 	newPath := newItem.Name
 	newPrefix, newName, ok := cutLast(newPath, ".")
 	if ok {
-		newOuter = snap.Lookup(newPrefix)
+		newOuter = snap.Eval(newPrefix)
 		if newOuter == nil {
 			snap.ErrorAt(token.NoPos, "cannot find destination %s", newPrefix)
 			return

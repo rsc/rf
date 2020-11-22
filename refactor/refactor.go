@@ -17,10 +17,30 @@ type Refactor struct {
 	Stdout   io.Writer
 	Stderr   io.Writer
 	ShowDiff bool
+	Debug    map[string]string // debugging settings
 
 	dir     string
 	modRoot string
 	modPath string
+}
+
+func (r *Refactor) ModRoot() string {
+	return r.modRoot
+}
+
+func (r *Refactor) ModPath() string {
+	return r.modPath
+}
+
+func (r *Refactor) PkgDir(pkg string) (string, error) {
+	if pkg == r.modPath {
+		return r.modRoot, nil
+	}
+	if !strings.HasPrefix(pkg, r.modPath) || pkg[len(r.modPath)] != '/' {
+		return "", fmt.Errorf("module %s does not contain %s", r.modPath, pkg)
+	}
+	// TODO nested module check
+	return filepath.Join(r.modRoot, pkg[len(r.modPath)+1:]), nil
 }
 
 // New returns a new refactoring,
@@ -41,6 +61,7 @@ func New(dir string) (*Refactor, error) {
 	r := &Refactor{
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
+		Debug:  make(map[string]string),
 		dir:    dir,
 	}
 	return r, nil

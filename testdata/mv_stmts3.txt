@@ -1,0 +1,67 @@
+mv T.M1:, T_M1
+mv T.M2:, T_M2
+mv T.M3:, T_M3
+mv M4:, T_M4
+
+-- x.go --
+package p
+
+func (t *T) M1() {
+	hello(t)
+}
+
+func (t *T) M2() {
+	t.m()
+}
+
+func (t *T) M3() {
+	_ = t.X
+}
+
+func M4(t *T) {
+	_ = t.X
+}
+
+func hello(t *T) {}
+func (t *T) m()  {}
+
+type T struct{ X int }
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,18 +1,34 @@
+ package p
+
+ func (t *T) M1() {
++	T_M1(t)
++}
++
++func T_M1(t *T) {
+ 	hello(t)
+ }
+
+ func (t *T) M2() {
++	T_M2(t)
++}
++
++func T_M2(t *T) {
+ 	t.m()
+ }
+
+ func (t *T) M3() {
++	T_M3(t)
++}
++
++func T_M3(t *T) {
+ 	_ = t.X
+ }
+
+ func M4(t *T) {
++	T_M4(t)
++}
++
++func T_M4(t *T) {
+ 	_ = t.X
+ }
+

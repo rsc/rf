@@ -14,7 +14,7 @@ import (
 )
 
 func cmdRm(snap *refactor.Snapshot, args string) {
-	items, _ := snap.LookupAll(args)
+	items, _ := snap.EvalList(args)
 	if len(items) == 0 {
 		snap.ErrorAt(token.NoPos, "usage: rm old...\n")
 	}

@@ -29,7 +29,7 @@ func mvStmt(snap *refactor.Snapshot, old *refactor.Item, name string) {
 		list = list[:len(list)-1]
 	}
 
-	srcPkg, _ := snap.FileAt(old.Pos)
+	srcPkg, srcFile := snap.FileAt(old.Pos)
 	fn := stack[1].(*ast.FuncDecl)
 	didParam := make(map[types.Object]bool)
 	didResult := make(map[types.Object]bool)
@@ -44,11 +44,14 @@ func mvStmt(snap *refactor.Snapshot, old *refactor.Item, name string) {
 		if id.End() < old.Pos {
 			return
 		}
-		if _, ok := stack[1].(*ast.SelectorExpr); ok {
-			return
-		}
 		obj := srcPkg.TypesInfo.Uses[id]
 		if obj == nil || obj.Parent() == types.Universe || obj.Parent() == srcPkg.Types.Scope() {
+			return
+		}
+		if _, ok := obj.(*types.PkgName); ok {
+			return
+		}
+		if sel, ok := stack[1].(*ast.SelectorExpr); ok && id == sel.Sel {
 			return
 		}
 
@@ -76,24 +79,29 @@ func mvStmt(snap *refactor.Snapshot, old *refactor.Item, name string) {
 	})
 
 	var buf bytes.Buffer
+	fmtType := func(typ types.Type) {
+		printType(&buf, snap, old.Pos, srcFile.End(), typ)
+	}
 	fmt.Fprintf(&buf, "\n\nfunc %s(", name)
 	for i, obj := range params {
 		if i > 0 {
 			fmt.Fprintf(&buf, ", ")
 		}
-		fmt.Fprintf(&buf, "%s %s", obj.Name(), obj.Type())
+		fmt.Fprintf(&buf, "%s ", obj.Name())
+		fmtType(obj.Type())
 	}
 	fmt.Fprintf(&buf, ")")
 	if len(results) > 0 {
 		if len(results) == 1 {
-			fmt.Fprintf(&buf, " %s", results[0].Type())
+			fmt.Fprintf(&buf, " ")
+			fmtType(results[0].Type())
 		} else {
 			fmt.Fprintf(&buf, " (")
 			for i, obj := range results {
 				if i > 0 {
 					fmt.Fprintf(&buf, ", ")
 				}
-				fmt.Fprintf(&buf, "%s", obj.Type())
+				fmtType(obj.Type())
 			}
 			fmt.Fprintf(&buf, ")")
 		}
@@ -136,4 +144,52 @@ func mvStmt(snap *refactor.Snapshot, old *refactor.Item, name string) {
 	snap.ReplaceAt(old.Pos, old.End, buf.String())
 
 	//	panic(StackTypes(stack))
+}
+
+func printType(b *bytes.Buffer, snap *refactor.Snapshot, src, dst token.Pos, typ types.Type) {
+	switch typ := typ.(type) {
+	default:
+		snap.ErrorAt(src, "extract type %T not implemented", typ)
+	case *types.Basic:
+		// TODO check shadowing
+		b.WriteString(typ.Name())
+	case *types.Named:
+		dstPkg, _ := snap.FileAt(dst)
+		tn := typ.Obj()
+		if tn.Pkg() != dstPkg.Types {
+			name := snap.NeedImport(dst, "", tn.Pkg())
+			b.WriteString(name + ".")
+		}
+		b.WriteString(tn.Name())
+	case *types.Pointer:
+		b.WriteString("*")
+		printType(b, snap, src, dst, typ.Elem())
+	case *types.Slice:
+		b.WriteString("[]")
+		printType(b, snap, src, dst, typ.Elem())
+	case *types.Array:
+		fmt.Fprintf(b, "[%d]", typ.Len())
+		printType(b, snap, src, dst, typ.Elem())
+	case *types.Chan:
+		switch typ.Dir() {
+		case types.SendRecv:
+			b.WriteString("chan ")
+		case types.SendOnly:
+			b.WriteString("chan<- ")
+		case types.RecvOnly:
+			b.WriteString("<-chan ")
+		}
+		if typ.Dir() != types.SendOnly {
+			if inner, ok := typ.Elem().(*types.Chan); ok && inner.Dir() == types.RecvOnly {
+				b.WriteString("(")
+				defer b.WriteString(")")
+			}
+		}
+		printType(b, snap, src, dst, typ.Elem())
+	case *types.Map:
+		b.WriteString("map[")
+		printType(b, snap, src, dst, typ.Key())
+		b.WriteString("]")
+		printType(b, snap, src, dst, typ.Elem())
+	}
 }

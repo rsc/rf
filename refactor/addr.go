@@ -76,9 +76,7 @@ func (k ItemKind) String() string {
 	return "???"
 }
 
-// TODO: Rename Lookup to Eval - there's already a Lookup.
-
-func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
+func (s *Snapshot) EvalNext(args string) (*Item, string, string) {
 	args = strings.TrimLeft(args, " \t\n")
 	if args == "" {
 		return nil, "", ""
@@ -88,7 +86,7 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 		switch expr[i] {
 		case ' ', '\t', '\n':
 			expr, rest := expr[:i], args[i+1:]
-			return s.Lookup(expr), expr, rest
+			return s.Eval(expr), expr, rest
 		case ':':
 			// Scan address.
 			slash := false
@@ -114,11 +112,12 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 				s.ErrorAt(token.NoPos, "unterminated text range: %v", expr)
 				return nil, expr, ""
 			}
-			item := s.Lookup(outer)
+			item := s.Eval(outer)
 			if item == nil {
 				return nil, expr, ""
 			}
 			var start, end token.Pos
+			afterBrace := false
 			switch item.Kind {
 			default:
 				s.ErrorAt(token.NoPos, "cannot apply text range to %v", item.Kind)
@@ -129,6 +128,7 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 				stack := s.SyntaxAt(fvar.Pos()) // FuncType Ident FuncDecl
 				decl := stack[2].(*ast.FuncDecl)
 				start, end = decl.Body.Lbrace+1, decl.Body.Rbrace
+				afterBrace = true
 
 			case ItemVar, ItemType:
 				tvar := item.Obj
@@ -161,6 +161,7 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 						struc = spec.Type.(*ast.StructType)
 					}
 					start, end = struc.Fields.Opening+1, struc.Fields.Closing
+					afterBrace = true
 				}
 
 			case ItemFile:
@@ -169,6 +170,16 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 			}
 
 			text := s.Text(start, end)
+			if afterBrace {
+				i := 0
+				for i < len(text) && (text[i] == ' ' || text[i] == '\t') {
+					i++
+				}
+				if i < len(text) && text[i] == '\n' {
+					start += token.Pos(i + 1)
+					text = text[i+1:]
+				}
+			}
 			lo, hi, err := addrToByteRange(addr, 0, text)
 			if err != nil {
 				s.ErrorAt(token.NoPos, "cannot evaluate address %s: %v", addr, err)
@@ -182,14 +193,14 @@ func (s *Snapshot) LookupNext(args string) (*Item, string, string) {
 			return item, expr, rest
 		}
 	}
-	return s.Lookup(expr), expr, ""
+	return s.Eval(expr), expr, ""
 }
 
-func (s *Snapshot) LookupAll(args string) ([]*Item, []string) {
+func (s *Snapshot) EvalList(args string) ([]*Item, []string) {
 	var items []*Item
 	var exprs []string
 	for {
-		item, expr, rest := s.LookupNext(args)
+		item, expr, rest := s.EvalNext(args)
 		if expr == "" {
 			break
 		}
@@ -200,8 +211,8 @@ func (s *Snapshot) LookupAll(args string) ([]*Item, []string) {
 	return items, exprs
 }
 
-func (s *Snapshot) Lookup(expr string) *Item {
-	if strings.Contains(expr, "/") {
+func (s *Snapshot) Eval(expr string) *Item {
+	if expr == "." || strings.Contains(expr, "/") {
 		return &Item{Kind: ItemDir, Name: expr}
 	}
 	if strings.HasSuffix(expr, ".go") {
@@ -209,14 +220,14 @@ func (s *Snapshot) Lookup(expr string) *Item {
 	}
 
 	name, rest, more := cut(expr, ".")
-	item := lookupInScope(s.target.Types.Scope(), name)
+	item := evalScope(s.target.Types.Scope(), name)
 	item.Name = name
 	if item.Kind == ItemNotFound {
 		return item
 	}
 	for more {
 		name, rest, more = cut(rest, ".")
-		item = lookupIn(s.target, item, name)
+		item = evalPackage(s.target, item, name)
 		if item.Kind == ItemNotFound {
 			return item
 		}
@@ -224,7 +235,7 @@ func (s *Snapshot) Lookup(expr string) *Item {
 	return item
 }
 
-func lookupInScope(scope *types.Scope, expr string) *Item {
+func evalScope(scope *types.Scope, expr string) *Item {
 	obj := scope.Lookup(expr)
 	switch obj := obj.(type) {
 	default:
@@ -243,7 +254,7 @@ func lookupInScope(scope *types.Scope, expr string) *Item {
 	}
 }
 
-func lookupIn(p *Package, outer *Item, name string) *Item {
+func evalPackage(p *Package, outer *Item, name string) *Item {
 	switch outer.Kind {
 	case ItemType:
 		// Look for method, field.
@@ -262,7 +273,7 @@ func lookupIn(p *Package, outer *Item, name string) *Item {
 		}
 	case ItemFunc:
 		// Look for declaration inside function.
-		item := lookupInScope(outer.Obj.(*types.Func).Scope(), name)
+		item := evalScope(outer.Obj.(*types.Func).Scope(), name)
 		item.Outer = outer
 		item.Name = outer.Name + "." + name
 		return item

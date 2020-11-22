@@ -12,7 +12,7 @@ import (
 )
 
 func cmdAdd(snap *refactor.Snapshot, args string) {
-	item, expr, text := snap.LookupNext(args)
+	item, expr, text := snap.EvalNext(args)
 	if expr == "" {
 		snap.ErrorAt(token.NoPos, "usage: add address text...\n")
 		return
