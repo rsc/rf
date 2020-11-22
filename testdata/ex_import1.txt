@@ -1,7 +1,8 @@
-ex \
-	import "m/q"; \
-	var i int; \
+ex {
+	import "m/q";
+	var i int
 	i*1 -> i+q.Q
+}
 -- x.go --
 package p
 

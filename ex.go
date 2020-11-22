@@ -52,15 +52,17 @@ func parseEx(snap *refactor.Snapshot, text string) (code string, err error) {
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		snap.ErrorAt(token.NoPos, "ex: empty command")
+		snap.ErrorAt(token.NoPos, "ex: missing block")
 		return
 	}
-	if text[0] == '{' && text[len(text)-1] == '}' {
-		text = strings.TrimSpace(text[1 : len(text)-1])
-		if text == "" {
-			snap.ErrorAt(token.NoPos, "ex: empty block")
-			return
-		}
+	if text[0] != '{' || text[len(text)-1] != '}' {
+		snap.ErrorAt(token.NoPos, "ex: malformed block - missing { }")
+		return
+	}
+	text = strings.TrimSpace(text[1 : len(text)-1])
+	if text == "" {
+		snap.ErrorAt(token.NoPos, "ex: empty block")
+		return
 	}
 	importOK := true
 	for text != "" {
@@ -135,7 +137,6 @@ func checkEx(snap *refactor.Snapshot, code string) ([]example, error) {
 	codePos := token.Pos(snap.Fset().Base())
 	f, err := parser.ParseFile(snap.Fset(), "ex.go", code, 0)
 	if err != nil {
-		println(code)
 		return nil, fmt.Errorf("internal error: %v", err)
 	}
 

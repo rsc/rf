@@ -1,4 +1,4 @@
-ex var z int; z*2 + y -> z<<1 + z
+ex { var z int; z*2 + y -> z<<1 + z }
 -- x.go --
 package p
 

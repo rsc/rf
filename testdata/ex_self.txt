@@ -1,4 +1,4 @@
-ex var x int; x+1 -> F(x)
+ex { var x int; x+1 -> F(x) }
 -- x.go --
 package p
 

@@ -1,4 +1,4 @@
-ex var i int; i+1 -> i*2
+ex { var i int; i+1 -> i*2 }
 -- x.go --
 package p
 

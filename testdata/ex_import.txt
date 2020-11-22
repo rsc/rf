@@ -1,4 +1,4 @@
-ex import "m/q"; var i int; i*1 -> i+q.Q
+ex { import "m/q"; var i int; i*1 -> i+q.Q }
 -- x.go --
 package p
 

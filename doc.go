@@ -137,7 +137,7 @@
 //
 // The ex command applies rewrites based on example snippets.
 //
-//	ex [imports] [declarations] old->new...
+//	ex { [imports] [declarations] old->new... }
 //
 // The arguments to ex are interpreted as Go code consisting of a
 // sequence of imports and then a list of special “old -> new” rules.
@@ -145,21 +145,20 @@
 // it should replace the code with new. For example, to replace all
 // log.Error calls with log.Panic:
 //
-//	ex import "log"; log.Error -> log.Panic
+//	ex { import "log"; log.Error -> log.Panic }
 //
 // Declarations introduce typed pattern variables that can be used
 // in rules. For example, to simplify certain needlessly complex
 // uses of fmt.Sprintf:
 //
-//	ex \
-//		import "fmt"; \
-//		import "strconv"; \
-//		var s string; \
-//		fmt.Sprintf("%s", s) -> s; \
-//		fmt.Sprintf("%v", s) -> s; \
+//	ex {
+//		import "fmt";
+//		import "strconv";
+//		var s string;
+//		fmt.Sprintf("%s", s) -> s;
+//		fmt.Sprintf("%v", s) -> s;
 //		fmt.Sprintf("%q", s) -> strconv.Quote(s)
-//
-// The semicolons are required. TODO: Don't require them.
+//	}
 //
 // The mv command
 //
