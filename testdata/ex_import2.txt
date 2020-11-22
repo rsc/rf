@@ -1,4 +1,4 @@
-ex import "example.com/sub"; sub.Zero -> 0
+ex { import "example.com/sub"; sub.Zero -> 0 }
 -- go.mod --
 module example.com
 -- x.go --

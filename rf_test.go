@@ -11,12 +11,63 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"golang.org/x/tools/txtar"
 	"rsc.io/rf/diff"
 	"rsc.io/rf/refactor"
 )
+
+var readLineTests = []struct {
+	in  string
+	out []string
+	err error
+}{
+	{
+		in:  "cmd x y",
+		out: []string{"cmd x y"},
+	},
+	{
+		in:  "cmd x \\\ny",
+		out: []string{"cmd x \ny"},
+	},
+	{
+		in:  "cmd x \\ # hello\ny",
+		out: []string{"cmd x \ny"},
+	},
+	{
+		in:  "cmd x y\n",
+		out: []string{"cmd x y"},
+	},
+	{
+		in:  "cmd (\nx y\n)\n",
+		out: []string{"cmd (\nx y\n)"},
+	},
+	{
+		in:  "cmd {\nx y\n}\n",
+		out: []string{"cmd {\nx y\n}"},
+	},
+}
+
+func TestReadLine(t *testing.T) {
+	for _, tt := range readLineTests {
+		var out []string
+		var err error
+		text := tt.in
+		for text != "" && err == nil {
+			var line string
+			line, text, err = readLine(text)
+			if line != "" {
+				out = append(out, line)
+			}
+		}
+		if !reflect.DeepEqual(out, tt.out) || fmt.Sprint(err) != fmt.Sprint(tt.err) {
+			t.Errorf("input:\n%s\nreadLine => %q, %v, want %q, %v",
+				tt.in, out, err, tt.out, tt.err)
+		}
+	}
+}
 
 var updateTestData = flag.Bool("u", false, "update testdata instead of failing")
 

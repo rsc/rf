@@ -38,7 +38,6 @@ func cmdEx(snap *refactor.Snapshot, text string) {
 }
 
 func cutGo(text, sep string) (before, after string, ok bool, err error) {
-	// TODO
 	before, after, ok = cut(text, sep)
 	return before, after, ok, nil
 }
@@ -52,12 +51,20 @@ func parseEx(snap *refactor.Snapshot, text string) (code string, err error) {
 		fmt.Fprintf(&buf, "package ex\n")
 	}
 	text = strings.TrimSpace(text)
+	if text == "" {
+		snap.ErrorAt(token.NoPos, "ex: empty command")
+		return
+	}
+	if text[0] == '{' && text[len(text)-1] == '}' {
+		text = strings.TrimSpace(text[1 : len(text)-1])
+		if text == "" {
+			snap.ErrorAt(token.NoPos, "ex: empty block")
+			return
+		}
+	}
 	importOK := true
 	for text != "" {
-		stmt, rest, _, err := cutGo(text, ";")
-		if err != nil {
-			return "", err
-		}
+		stmt, rest, _ := cutAny(text, ";\n") // TODO
 		text = rest
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"log"
@@ -66,23 +67,19 @@ func run(rf *refactor.Refactor, script string) error {
 	text := script
 	lastCmd := ""
 	for text != "" {
-		var line string
-		line, text, _ = cut(text, "\n")
-		line = trimComments(line)
-		for strings.HasSuffix(line, `\`) && text != "" {
-			var l string
-			l, text, _ = cut(text, "\n")
-			line = line[:len(line)-1] + "\n" + l
-			line = trimComments(line)
+		line, rest, err := readLine(text)
+		if err != nil {
+			return err
 		}
-		line = strings.TrimLeft(line, " \t\n")
+		text = rest
 		if line == "" {
 			continue
 		}
+
 		cmd, args, _ := cutAny(line, " \t")
 
 		if rf.Debug["trace"] != "" {
-			fmt.Fprintf(os.Stderr, "> %s\n", strings.ReplaceAll(line, "\n", "\\\n"))
+			fmt.Fprintf(os.Stderr, "> %s\n", line)
 		}
 
 		fn := cmds[cmd]
@@ -90,7 +87,6 @@ func run(rf *refactor.Refactor, script string) error {
 			return fmt.Errorf("unknown command %s", cmd)
 		}
 
-		var err error
 		snap, err = base.Load()
 		if err != nil {
 			return err
@@ -155,6 +151,94 @@ func run(rf *refactor.Refactor, script string) error {
 	}
 
 	return snap.Write()
+}
+
+func readLine(text string) (line, rest string, err error) {
+	text = strings.TrimLeft(text, " \t\n")
+	var (
+		keep  bytes.Buffer
+		punct []byte
+		start int
+		quote byte
+		escNL bool
+	)
+	for i := 0; i < len(text); i++ {
+		switch c := text[i]; {
+		case quote == 0 && c == '#':
+			// Cut comment to end of line, but leave \n for next iteration.
+			keep.WriteString(text[start:i])
+			j := strings.IndexByte(text[i:], '\n')
+			if j < 0 {
+				j = len(text)
+			} else {
+				j += i
+			}
+			start = j
+			i = start - 1
+
+		case quote != 0 && c == quote:
+			quote = 0
+
+		case c == '"', c == '\'', c == '`':
+			quote = c
+
+		case c == '\\' && (quote == '\'' || quote == '"'):
+			i++
+
+		case c == '\n' && (quote == '\'' || quote == '"'):
+			return "", "", fmt.Errorf("newline in %c-quoted string", quote)
+
+		case quote != 0:
+			continue
+
+		case c == '\\':
+			j := i + 1
+			for j < len(text) && text[j] == ' ' || text[j] == '\t' {
+				j++
+			}
+			if text[j] == '\n' || text[j] == '#' {
+				escNL = true // do not break at next \n
+				keep.WriteString(text[start:i])
+				start = j
+				i = j - 1
+			}
+
+		case c == '\n' && len(punct) == 0:
+			if escNL {
+				escNL = false
+				continue
+			}
+			keep.WriteString(text[start:i])
+			rest = text[i+1:]
+			return keep.String(), rest, nil
+
+		case c == '{', c == '[', c == '(':
+			punct = append(punct, c)
+
+		case c == '}', c == ']', c == ')':
+			var open byte
+			switch c {
+			case '}':
+				open = '{'
+			case ']':
+				open = '['
+			case ')':
+				open = '('
+			}
+			if len(punct) == 0 || punct[len(punct)-1] != open {
+				return "", "", fmt.Errorf("unexpected %c", c)
+			}
+			punct = punct[:len(punct)-1]
+		}
+	}
+	if quote != 0 {
+		return "", "", fmt.Errorf("unterminated %c-quoted string", quote)
+	}
+	if len(punct) > 0 {
+		return "", "", fmt.Errorf("unclosed %c", punct[len(punct)-1])
+	}
+	keep.WriteString(text[start:])
+	return keep.String(), "", nil
 }
 
 func trimComments(line string) string {
