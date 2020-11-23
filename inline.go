@@ -41,17 +41,34 @@ func cmdInline(snap *refactor.Snapshot, args string) {
 			obj := item.Obj
 			stack := snap.SyntaxAt(obj.Pos())
 			id := stack[0].(*ast.Ident)
-			spec := stack[1].(*ast.ValueSpec)
 			decl := stack[2].(*ast.GenDecl)
-			for i := range spec.Names {
-				if spec.Names[i] == id {
-					if i >= len(spec.Values) {
-						snap.ErrorAt(id.Pos(), "no initializer for %s", item.Name)
-						continue
-					}
-					fix[obj] = spec.Values[i]
-					if rm != nil {
-						rm[obj] = true
+			switch spec := stack[1].(type) {
+			case *ast.TypeSpec:
+				if spec.Assign == token.NoPos {
+					snap.ErrorAt(id.Pos(), "%s is a defined type (not type alias)", item.Name)
+					break
+				}
+				fix[obj] = spec.Type
+				if rm != nil {
+					rm[obj] = true
+				}
+
+			case *ast.ValueSpec:
+				if spec.Type != nil {
+					// TODO: Inline anyway, using explicit conversion as necessary.
+					snap.ErrorAt(id.Pos(), "%s has declared type", item.Name)
+					break
+				}
+				for i := range spec.Names {
+					if spec.Names[i] == id {
+						if i >= len(spec.Values) {
+							snap.ErrorAt(id.Pos(), "no initializer for %s", item.Name)
+							continue
+						}
+						fix[obj] = spec.Values[i]
+						if rm != nil {
+							rm[obj] = true
+						}
 					}
 				}
 			}
