@@ -61,7 +61,7 @@ func (b *Buffer) edit(start, end int, new string, force bool) {
 	if end < start || start < 0 || end > len(b.old) {
 		panic("invalid edit position")
 	}
-	b.q = append(b.q, edit{start: start, end: end, new: new, force: true})
+	b.q = append(b.q, edit{start: start, end: end, new: new, force: force})
 }
 
 // Bytes returns a new byte slice containing the original data
