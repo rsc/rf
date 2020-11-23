@@ -1,4 +1,4 @@
-rm A1 B1 C1 D2 E1 F2 G3 H1 I2 J2
+rm A1 B1 C1 D2 E1 F2 G3 H1 I2 J2 T
 -- x.go --
 package p
 
@@ -20,11 +20,13 @@ var (
 	J2 int
 	J3 int
 )
+// T is.
+type T int
 -- stdout --
 diff old/x.go new/x.go
 --- old/x.go
 +++ new/x.go
-@@ -1,20 +1,14 @@
+@@ -1,22 +1,14 @@
  package p
 
 -var A1 int
@@ -51,3 +53,5 @@ diff old/x.go new/x.go
 -	J2 int
  	J3 int
  )
+-// T is.
+-type T int

@@ -62,6 +62,10 @@ Objs:
 			}
 			snap.DeleteAt(nodeRange(snap, decl))
 
+		case *ast.TypeSpec:
+			decl := stack[2].(*ast.GenDecl)
+			snap.DeleteAt(nodeRange(snap, decl))
+
 		case *ast.ValueSpec:
 			decl := stack[2].(*ast.GenDecl)
 			if did[decl] {
