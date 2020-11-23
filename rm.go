@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -45,6 +46,13 @@ Objs:
 		default:
 			// TODO *ast.AssignStmt
 			snap.ErrorAt(obj.Pos(), "cannot delete declaration of %s", obj.Name())
+
+		case *ast.Ident:
+			decl, ok := stack[2].(*ast.FuncDecl)
+			if !ok {
+				panic(fmt.Sprintf("unexpected node %T", stack[2]))
+			}
+			snap.DeleteAt(nodeRange(snap, decl))
 
 		case *ast.ValueSpec:
 			decl := stack[2].(*ast.GenDecl)
