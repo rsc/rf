@@ -1,0 +1,25 @@
+rm T.F
+-- x.go --
+package m
+
+type T struct {
+	// Not about F.
+
+	// F
+	F int // more about F
+	// G
+	G int
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -3,8 +3,6 @@
+ type T struct {
+ 	// Not about F.
+
+-	// F
+-	F int // more about F
+ 	// G
+ 	G int
+ }

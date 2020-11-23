@@ -29,7 +29,7 @@ func cmdRm(snap *refactor.Snapshot, args string) {
 			snap.ErrorAt(token.NoPos, "rm %s: %v not supported", item.Name, item.Kind)
 		case refactor.ItemPos:
 			snap.DeleteAt(item.Pos, item.End)
-		case refactor.ItemConst, refactor.ItemFunc, refactor.ItemMethod, refactor.ItemType, refactor.ItemVar:
+		case refactor.ItemConst, refactor.ItemField, refactor.ItemFunc, refactor.ItemMethod, refactor.ItemType, refactor.ItemVar:
 			rm[item.Obj] = true
 		}
 	}
@@ -42,10 +42,18 @@ Objs:
 	for obj := range rm {
 		stack := snap.SyntaxAt(obj.Pos())
 		pkg, _ := snap.FileAt(obj.Pos())
-		switch stack[1].(type) {
+		switch n := stack[1].(type) {
 		default:
 			// TODO *ast.AssignStmt
-			snap.ErrorAt(obj.Pos(), "cannot delete declaration of %s", obj.Name())
+			snap.ErrorAt(obj.Pos(), "cannot delete declaration of %s (unexpected %T)", obj.Name(), n)
+
+		case *ast.Field:
+			if len(n.Names) != 1 {
+				// TODO(mdempsky): Need to identify a comma we can delete.
+				snap.ErrorAt(obj.Pos(), "cannot delete declaration of %s (more than 1 field)", obj.Name())
+				break
+			}
+			snap.DeleteAt(nodeRange(snap, n))
 
 		case *ast.Ident:
 			decl, ok := stack[2].(*ast.FuncDecl)
@@ -68,7 +76,7 @@ Objs:
 			for _, s := range decl.Specs {
 				switch s := s.(type) {
 				default:
-					snap.ErrorAt(obj.Pos(), "cannot delete declaration of %s", obj.Name())
+					snap.ErrorAt(obj.Pos(), "cannot delete declaration of %s (unexpected %T)", obj.Name(), s)
 					continue Objs
 
 				case *ast.ValueSpec:
