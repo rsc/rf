@@ -52,32 +52,16 @@ func NewBuffer(data []byte) *Buffer {
 	return &Buffer{old: data}
 }
 
-func (b *Buffer) Insert(pos int, new string) {
-	if pos < 0 || pos > len(b.old) {
-		panic("invalid edit position")
-	}
-	b.q = append(b.q, edit{start: pos, end: pos, new: new})
-}
+func (b *Buffer) Insert(pos int, new string)         { b.edit(pos, pos, new, false) }
+func (b *Buffer) Delete(start, end int)              { b.edit(start, end, "", false) }
+func (b *Buffer) ForceDelete(start, end int)         { b.edit(start, end, "", true) }
+func (b *Buffer) Replace(start, end int, new string) { b.edit(start, end, new, false) }
 
-func (b *Buffer) Delete(start, end int) {
+func (b *Buffer) edit(start, end int, new string, force bool) {
 	if end < start || start < 0 || end > len(b.old) {
 		panic("invalid edit position")
 	}
-	b.q = append(b.q, edit{start: start, end: end, new: ""})
-}
-
-func (b *Buffer) ForceDelete(start, end int) {
-	if end < start || start < 0 || end > len(b.old) {
-		panic("invalid edit position")
-	}
-	b.q = append(b.q, edit{start: start, end: end, new: "", force: true})
-}
-
-func (b *Buffer) Replace(start, end int, new string) {
-	if end < start || start < 0 || end > len(b.old) {
-		panic("invalid edit position")
-	}
-	b.q = append(b.q, edit{start: start, end: end, new: new})
+	b.q = append(b.q, edit{start: start, end: end, new: new, force: true})
 }
 
 // Bytes returns a new byte slice containing the original data

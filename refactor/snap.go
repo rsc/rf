@@ -324,7 +324,7 @@ func packagesOf(pkgs map[string]*Package) []*Package {
 		list = append(list, p)
 	}
 	sort.Slice(list, func(i, j int) bool {
-		return list[i].PkgPath < list[j].PkgPath
+		return list[i].ID < list[j].ID
 	})
 	return list
 }

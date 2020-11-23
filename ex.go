@@ -231,6 +231,17 @@ func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *
 
 	snap.ForEachTargetFile(func(target *refactor.Package, file *ast.File) {
 		refactor.Walk(file, func(stack []ast.Node) {
+			// Do not match against the bare selector within a qualified identifier.
+			if len(stack) >= 2 {
+				if sel, ok := stack[1].(*ast.SelectorExpr); ok && sel.Sel == stack[0] {
+					if x, ok := sel.X.(*ast.Ident); ok {
+						if _, ok := info.Uses[x].(*types.PkgName); ok {
+							return
+						}
+					}
+				}
+			}
+
 			if m.match(pattern, stack[0]) {
 				// Do not apply substitution in its own definition.
 				if avoid == nil {
