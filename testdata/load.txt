@@ -19,6 +19,18 @@ package q
 import "m"
 
 var W = m.X
+-- q/q_test.go --
+package q
+
+import "m"
+
+var U = m.X
+-- q/qx_test.go --
+package q_test
+
+import "m"
+
+var V = m.X
 -- stdout --
 diff old/m.go new/m.go
 --- old/m.go
@@ -54,3 +66,21 @@ diff old/q/q.go new/q/q.go
 
 -var W = m.X
 +var W = m.Z
+diff old/q/q_test.go new/q/q_test.go
+--- old/q/q_test.go
++++ new/q/q_test.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-var U = m.X
++var U = m.Z
+diff old/q/qx_test.go new/q/qx_test.go
+--- old/q/qx_test.go
++++ new/q/qx_test.go
+@@ -2,4 +2,4 @@
+
+ import "m"
+
+-var V = m.X
++var V = m.Z
