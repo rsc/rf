@@ -123,12 +123,16 @@ func main() {
 		// such as those that might be left over from a conflicting cherry-pick or merge.
 		// Remove them ourselves.
 		for _, line := range strings.Split(gitDir(gitdir, "status", "--porcelain=1"), "\n") {
-			if len(line) >= 4 && (line[0] == 'A' && line[1] != 'D' || line[0] == 'U') {
-				name := filepath.Join(gitdir, line[3:])
-				if err := os.Remove(name); err != nil {
-					log.Fatal(err)
+			if len(line) >= 4 {
+				switch line[0:2] {
+				case "AD", "UU", "DU":
+					name := filepath.Join(gitdir, line[3:])
+					os.Remove(name)
+					if _, err := os.Stat(name); err == nil {
+						log.Fatalf("unable to remove %s", name)
+					}
+					os.Remove(filepath.Dir(name)) // in case directory is now empty: NOT RemoveAll
 				}
-				os.Remove(filepath.Dir(name)) // in case directory is now empty: NOT RemoveAll
 			}
 		}
 	}
