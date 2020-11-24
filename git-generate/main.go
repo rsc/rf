@@ -41,13 +41,14 @@ import (
 )
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: git-generate [-conflict]\n")
+	fmt.Fprintf(os.Stderr, "usage: git-generate [-conflict] [-f file]\n")
 	fmt.Fprintf(os.Stderr, "See 'go doc rsc.io/rf/git-generate' for details.\n")
 	os.Exit(2)
 }
 
 var (
 	conflict = flag.Bool("conflict", false, "generate from script in REBASE_HEAD to resolve conflict")
+	file     = flag.String("f", "", "read commit message containing script from `file`")
 )
 
 func main() {
@@ -60,6 +61,10 @@ func main() {
 	}
 
 	gitdir := strings.TrimSpace(git("rev-parse", "--show-toplevel"))
+
+	if *file != "" && *conflict {
+		log.Fatalf("cannot use -conflict with -f")
+	}
 
 	what := "HEAD"
 	if *conflict {
@@ -76,34 +81,30 @@ func main() {
 		log.Printf("using %s to resolve merge conflict", what)
 	}
 
-	msg := git("log", "-n1", what)
-	lines := strings.SplitAfter(msg, "\n")
 	var script []string
-	for _, line := range lines {
-		if !strings.HasPrefix(line, "    ") {
-			continue
+	if *file != "" {
+		what = *file
+		data, err := ioutil.ReadFile(*file)
+		if err != nil {
+			log.Fatal(err)
 		}
-		line = line[4:]
-		if script == nil && line == "[git-generate]\n" {
-			script = []string{}
-			continue
+		msg := string(data)
+		// Allow file to be indented four spaces (output of git log)
+		// or unintended (what you'd write in an actual commit message edit).
+		script = readScript(msg, "    ")
+		if script == nil {
+			script = readScript(msg, "")
 		}
-		if strings.HasPrefix(line, "Change-Id:") {
-			break
-		}
-		if len(script) == 0 && strings.TrimSpace(line) == "" {
-			continue
-		}
-		if script != nil {
-			script = append(script, line)
-		}
+	} else {
+		msg := git("log", "-n1", what)
+		script = readScript(msg, "    ")
 	}
 
 	if len(script) == 0 {
 		log.Fatalf("no script found in %s", what)
 	}
 
-	if what == "HEAD" {
+	if what == "HEAD" && *file == "" {
 		// Reset files to HEAD^ in preparation for reapplying HEAD commit.
 		// For a brief moment HEAD is pointing at HEAD^, which is unfortunate.
 		// It would be very nice if there were some single command to do this pair,
@@ -168,6 +169,31 @@ func main() {
 		gitDir(gitdir, addCmd...)
 	}
 	git("add", "-u")
+}
+
+func readScript(msg, prefix string) []string {
+	lines := strings.SplitAfter(msg, "\n")
+	var script []string
+	for _, line := range lines {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		line = line[len(prefix):]
+		if script == nil && line == "[git-generate]\n" {
+			script = []string{}
+			continue
+		}
+		if strings.HasPrefix(line, "Change-Id:") {
+			break
+		}
+		if len(script) == 0 && strings.TrimSpace(line) == "" {
+			continue
+		}
+		if script != nil {
+			script = append(script, line)
+		}
+	}
+	return script
 }
 
 func git(args ...string) string {
