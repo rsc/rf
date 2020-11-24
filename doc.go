@@ -129,19 +129,6 @@
 //
 //	add x.go func F() {}
 //
-// The key command
-//
-// The key command converts all struct literals for a list of types to keyed literals.
-//
-//	key address...
-//
-// Each address must identify a struct type. All literals of those struct types are
-// updated to use the keyed form.
-//
-// Example:
-//
-//	key Point
-//
 // The cp command
 //
 // The cp command is like mv (see below) but doesn't delete the source
@@ -194,6 +181,19 @@
 // TAlias with T and then removes TAlias.
 //
 // UNIMPLEMENTED: Inlining of functions.
+//
+// The key command
+//
+// The key command converts all struct literals for a list of types to keyed literals.
+//
+//	key address...
+//
+// Each address must identify a struct type. All literals of those struct types are
+// updated to use the keyed form.
+//
+// Example:
+//
+//	key Point
 //
 // The mv command
 //
