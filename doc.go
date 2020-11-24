@@ -27,6 +27,15 @@
 //		   T.field   # destination
 //	'
 //
+// Commands that take { } blocks need not backslash-escape line breaks inside the braces, as in:
+//
+//	rf '
+//		ex {
+//			var x *Node
+//			x.Left -> x.GetLeft()
+//		}
+//	'
+//
 // Code addresses
 //
 // Most commands take “code addresses” as arguments.
@@ -35,15 +44,19 @@
 //
 //	package p
 //
+//	import "fmt"
+//
 //	const (
 //		C = iota
 //		D
 //	)
 //
-//	func F() {
+//	const E = 2.718281828
+//
+//	func F(w io.Writer) {
 //		who := "world"
 //		msg := fmt.Sprintf("hello, %v", who)
-//		fmt.Printf("%s\n", msg)
+//		fmt.Fprintf(w, "%s\n", msg)
 //	}
 //
 //	type T struct { Field int }
@@ -53,6 +66,8 @@
 //	}
 //
 //	func (*T) P() {}
+//
+//	type TAlias = T
 //
 //	var V struct {
 //		Value int
@@ -96,23 +111,22 @@
 //
 // The add command
 //
-// The add command adds to the package. It takes as an argument the
-// address where the text should be added, followed by any text to include.
+// The add command adds text to the source code. It takes as an argument the
+// address after which the text should be added, followed by the text itself.
 //
 //	add address text...
 //
-// If the address is a function, struct type, or interface type, the text is added
-// immediately before the closing brace.
-//
-// If the address is a file, the text will be added at the end of the file.
-//
-// If the address is a package, the text will be added at the end of the
-// first file in the package, considering the file names in lexical order.
+// The address may be a declaration, text range, file, or package.
+// In all cases, the text is added immediately after the addressed location:
+// after the declaration, after the text range, at the end of the file,
+// or at the end of the first file in the package (considering the file names
+// in lexical order).
 //
 // Examples:
 //
-//	add T.Field \
+//	add T:$ \
 //		NewField int `tag`
+//
 //	add x.go func F() {}
 //
 // The key command
@@ -160,6 +174,27 @@
 //		fmt.Sprintf("%q", s) -> strconv.Quote(s)
 //	}
 //
+// The inline command
+//
+// The inline command inlines uses of declared constants, functions, and types.
+//
+//	inline [-rm] decl...
+//
+// Each use of the named declarations is replaced by the declaration's definition.
+// If the -rm flag is given, inline removes the declarations as well.
+//
+// Examples:
+//
+//	inline E
+//
+//	inline -rm TAlias
+//
+// Given the declarations in the “Code addresses” section above, the first command
+// replaces all uses of E with 2.718281828. The second replaces all uses of
+// TAlias with T and then removes TAlias.
+//
+// UNIMPLEMENTED: Inlining of functions.
+//
 // The mv command
 //
 // The mv command moves and renames code.
@@ -181,37 +216,58 @@
 // that is the same code address with the final element changed.
 // For example:
 //
-//	mv Point.x Point.X  # struct field
+//	mv E Euler             # constant
+//	mv F Func              # function
+//	mv F.w F.writer        # argument name
+//	mv F.who F.greetee     # local variable name
+//	mv T MyType            # type
+//	mv T.M T.Method        # method
+//	mv T.M.t T.M.rcvr      # receiver name
+//	mv Point.x Point.X     # struct field
+//	mv V Var               # var
+//	mv V.Value V.IntValue  # var struct field
 //
-// If the source is a struct field, the destination must be a field
-// in the same struct, and mv renames the field. For example:
-//
-//	mv Point.x Point.X
-//	mv Point.y Point.Y
-//
-// If the source is a top-level const, func, type, or var, and the
-// destination names a non-existent top-level name,
-// then mv
+// In this form, the destination address must repeat the dot-separated elements
+// leading up to the new name, changing only the final element.
+// The repetition here distinguishes this form from other forms.
 //
 // var → var field
 //
-// TODO
+// A top-level variable can be moved to a new or existing field in a
+// global variable of struct type. For example:
+//
+//	mv VT V.VT
 //
 // method → func
 //
-// TODO
+// A method can be moved to a top-level function, removing the association with the receiver type.
+// The receiver remains the first argument of the new function. For example:
+//
+//	mv T.Method TFunction
 //
 // func → method
 //
-// TODO
+// A function can be moved to a method on the type of its first argument,
+// assuming that type is defined in the same package where the function appears.
+// For example:
+//
+//	mv TFunction T.Method
+//
+// UNIMPLEMENTED.
 //
 // code text → new function
 //
-// TODO
+// A text range can be moved to a new function, leaving behind an appropriate
+// call to that function. For example:
+//
+//	mv F:/msg/,$ Greet
 //
 // code text → new method
 //
-// TODO
+// A text range can be moved to a new method, leaving behind an approriate
+// call to that method. For example: TODO.
+//
+// UNIMPLEMENTED.
 //
 // declaration → file
 //
@@ -223,28 +279,70 @@
 //	mv Template NewTemplate Template.Method thing.go
 //
 // Naming a single item in a declaration block is taken to indicate
-// wanting to move the entire block.
+// wanting to move all items in the block. In the example from the
+// “Code addresses” section, “mv C x.go” moves D as well.
 //
 // Any time a destination file must be created, mv initializes it
 // with the header comments (those above the package declaration
 // and any package doc) from the file the source code is being
 // moved from. This heuristic is meant to copy header text like copyright notices.
 //
+// The file may be in a different package. As usual, mv updates references
+// to the moved declaration to refer to its new location, inserting imports
+// as needed. If the result is an import cycle, mv reports the cycle
+// rather than attempt some kind of automatic (and likely wrong) fix.
+//
+// declaration → package
+//
+// If the source is a top-level declaration and the destination is a package,
+// mv moves the declaration to the a file in the destination package with
+// the same name as the one holding the source item.
+//
+//	mv F ../otherpkg  # if F is in f.go, same as mv F ../otherpkg/f.go
+//
+// If the destination package does not exist, it will be created.
+//
 // file → file
 //
-// TODO
+// If the source and destination are both files, mv moves all code from
+// the source file to the end of the destination file. For example:
+//
+//	mv x.go y.go
+//	mv x.go ../otherpkg/y.go
 //
 // file → package
 //
-// TODO
+// If the source is a file and the destination is a package, mv moves all code
+// from the source file to a file in the destination with the same base name.
+// For example:
+//
+//	mv x.go ../otherpkg   # same as mv x.go ../otherpkg/x.go
 //
 // package → file
 //
-// TODO
+// If the source is a package and the destination is a file, mv moves all code
+// from the source package to the named file.
+// For example:
+//
+//	mv ../otherpkg x.go
+//
+// UNIMPLEMENTED.
 //
 // package → package
 //
-// TODO
+// If the source is a package and the destination is a file, mv moves all code
+// from the source package to the destination package.
+// from the source package to the named file.
+// For example:
+//
+//	mv ../otherpkg x.go
+//
+// UNIMPLEMENTED.
+//
+// many → file, many → package
+//
+// If the destination is a file or package, multiple sources can be listed.
+// The mv command moves each source item in turn to the destination.
 //
 // The rm command
 //
