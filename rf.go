@@ -113,7 +113,6 @@ func run(rf *refactor.Refactor, script string) error {
 
 		targ := snap.Target()
 		if targ.Types == nil {
-			println("TARG", targ, targ.PkgPath)
 			panic("no types in target")
 		}
 

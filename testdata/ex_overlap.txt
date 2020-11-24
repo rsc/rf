@@ -1,0 +1,30 @@
+ex {
+	var t *T
+	t.M() -> t.F()
+}
+-- x.go --
+package p
+
+type T struct {}
+
+func (t *T) M() *T { return t}
+func (t *T) F() *T { return t}
+
+var _ = new(T).M().M().M()
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,8 +1,8 @@
+ package p
+
+-type T struct {}
++type T struct{}
+
+-func (t *T) M() *T { return t}
+-func (t *T) F() *T { return t}
++func (t *T) M() *T { return t }
++func (t *T) F() *T { return t }
+
+-var _ = new(T).M().M().M()
++var _ = new(T).F().F().F()

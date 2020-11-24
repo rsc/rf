@@ -11,6 +11,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"path"
 	"strconv"
 	"strings"
 
@@ -24,13 +25,13 @@ type example struct {
 }
 
 func cmdEx(snap *refactor.Snapshot, text string) {
-	code, err := parseEx(snap, text)
+	targets, code, err := parseEx(snap, text)
 	if err != nil {
 		snap.ErrorAt(token.NoPos, "ex: %v", err)
 		return
 	}
 
-	if _, err := checkEx(snap, code); err != nil {
+	if _, err := checkEx(snap, targets, code); err != nil {
 		snap.ErrorAt(token.NoPos, "ex: %v", err)
 		return
 	}
@@ -42,27 +43,59 @@ func cutGo(text, sep string) (before, after string, ok bool, err error) {
 	return before, after, ok, nil
 }
 
-func parseEx(snap *refactor.Snapshot, text string) (code string, err error) {
+func parseEx(snap *refactor.Snapshot, text string) (targets []*refactor.Package, code string, err error) {
 	fset := token.NewFileSet()
-	var buf bytes.Buffer
-	if true { // TODO: single vs multiple targets
-		fmt.Fprintf(&buf, "package %s\n", snap.Target().Types.Name())
-	} else {
-		fmt.Fprintf(&buf, "package ex\n")
-	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		snap.ErrorAt(token.NoPos, "ex: missing block")
 		return
 	}
-	if text[0] != '{' || text[len(text)-1] != '}' {
+	i := strings.Index(text, "{")
+	if i < 0 || text[len(text)-1] != '}' {
 		snap.ErrorAt(token.NoPos, "ex: malformed block - missing { }")
 		return
 	}
-	text = strings.TrimSpace(text[1 : len(text)-1])
+	before := strings.TrimSpace(text[:i])
+	targets = []*refactor.Package{snap.Target()}
+	if before != "" {
+		targets = nil
+		items, _ := snap.EvalList(before)
+		ok := true
+	Items:
+		for _, item := range items {
+			if item.Kind != refactor.ItemDir {
+				snap.ErrorAt(token.NoPos, "ex: %s is not a package", item.Name)
+				ok = false
+				continue
+			}
+			pkgPath := item.Name
+			if pkgPath == "." || strings.HasPrefix(pkgPath, "./") || strings.HasPrefix(pkgPath, "../") {
+				pkgPath = path.Join(snap.Target().PkgPath, pkgPath)
+			}
+			for _, p := range snap.Packages() {
+				if p.PkgPath == pkgPath {
+					targets = append(targets, p)
+					continue Items
+				}
+			}
+			snap.ErrorAt(token.NoPos, "ex: cannot find package %s", pkgPath)
+			ok = false
+		}
+		if !ok {
+			return
+		}
+	}
+	text = strings.TrimSpace(text[i+1 : len(text)-1])
 	if text == "" {
 		snap.ErrorAt(token.NoPos, "ex: empty block")
 		return
+	}
+
+	var buf bytes.Buffer
+	if true || len(targets) == 1 {
+		fmt.Fprintf(&buf, "package %s\n", targets[0].Types.Name())
+	} else {
+		fmt.Fprintf(&buf, "package ex\n")
 	}
 	importOK := true
 	for text != "" {
@@ -74,15 +107,15 @@ func parseEx(snap *refactor.Snapshot, text string) (code string, err error) {
 		}
 		switch kw := strings.Fields(stmt)[0]; kw {
 		case "package", "type", "func", "const":
-			return "", fmt.Errorf("%s declaration not allowed", kw)
+			return nil, "", fmt.Errorf("%s declaration not allowed", kw)
 
 		case "defer", "for", "go", "if", "return", "select", "switch":
-			return "", fmt.Errorf("%s statement not allowed", kw)
+			return nil, "", fmt.Errorf("%s statement not allowed", kw)
 
 		case "import":
 			file, err := parser.ParseFile(fset, "ex.go", "package p;"+stmt, 0)
 			if err != nil {
-				return "", fmt.Errorf("parsing %s: %v", stmt, err)
+				return nil, "", fmt.Errorf("parsing %s: %v", stmt, err)
 			}
 			imp := file.Imports[0]
 			pkg := importPath(imp)
@@ -93,16 +126,16 @@ func parseEx(snap *refactor.Snapshot, text string) (code string, err error) {
 				}
 			}
 			if !have {
-				return "", fmt.Errorf("import %q not available", pkg)
+				return nil, "", fmt.Errorf("import %q not available", pkg)
 			}
 			if !importOK {
-				return "", fmt.Errorf("parsing %s: import too late", stmt)
+				return nil, "", fmt.Errorf("parsing %s: import too late", stmt)
 			}
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
 		case "var":
 			if _, err := parser.ParseExpr("func() {" + stmt + "}"); err != nil {
-				return "", fmt.Errorf("parsing %s: %v", stmt, err)
+				return nil, "", fmt.Errorf("parsing %s: %v", stmt, err)
 			}
 			if importOK {
 				fmt.Fprintf(&buf, "func _() {\n")
@@ -116,7 +149,7 @@ func parseEx(snap *refactor.Snapshot, text string) (code string, err error) {
 			// because we already processed it once.
 			before, after, ok, _ := cutGo(stmt, "->")
 			if !ok {
-				return "", fmt.Errorf("parsing: %s: missing -> in rewrite", stmt)
+				return nil, "", fmt.Errorf("parsing: %s: missing -> in rewrite", stmt)
 			}
 			// TODO: parse stmt / parse expr
 			if importOK {
@@ -127,13 +160,13 @@ func parseEx(snap *refactor.Snapshot, text string) (code string, err error) {
 		}
 	}
 	if importOK {
-		return "", fmt.Errorf("no example rewrites")
+		return nil, "", fmt.Errorf("no example rewrites")
 	}
 	fmt.Fprintf(&buf, "}\n")
-	return buf.String(), nil
+	return targets, buf.String(), nil
 }
 
-func checkEx(snap *refactor.Snapshot, code string) ([]example, error) {
+func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) ([]example, error) {
 	codePos := token.Pos(snap.Fset().Base())
 	f, err := parser.ParseFile(snap.Fset(), "ex.go", code, 0)
 	if err != nil {
@@ -159,24 +192,24 @@ func checkEx(snap *refactor.Snapshot, code string) ([]example, error) {
 		}),
 	}
 
-	var info *types.Info
 	var typesPkg *types.Package
-	if true { // TODO single vs double
-		p := snap.Target()
-		info = p.TypesInfo
+	var info *types.Info
+	if true || len(targets) == 1 {
+		p := targets[0]
 		typesPkg = p.Types
+		info = p.TypesInfo
 	} else {
+		typesPkg = types.NewPackage("ex", "ex")
 		info = &types.Info{
 			Types:      make(map[ast.Expr]types.TypeAndValue),
 			Defs:       make(map[*ast.Ident]types.Object),
 			Uses:       make(map[*ast.Ident]types.Object),
 			Selections: make(map[*ast.SelectorExpr]*types.Selection),
+			Scopes:     make(map[ast.Node]*types.Scope),
+			Implicits:  make(map[ast.Node]types.Object),
 		}
 	}
 
-	if typesPkg == nil {
-		typesPkg = types.NewPackage("ex", "ex")
-	}
 	check := types.NewChecker(conf, snap.Fset(), typesPkg, info)
 	err = check.Files([]*ast.File{f})
 	_ = err // already handled in conf.Error
@@ -200,7 +233,7 @@ func checkEx(snap *refactor.Snapshot, code string) ([]example, error) {
 		if x, ok := subst.(*ast.ExprStmt); ok {
 			subst = x.X
 		}
-		applyEx(snap, code, codePos, typesPkg, info, pattern, subst)
+		applyEx(snap, targets, code, codePos, typesPkg, info, pattern, subst)
 	}
 	return nil, nil
 }
@@ -225,134 +258,139 @@ func avoidOf(snap *refactor.Snapshot, info *types.Info, subst ast.Node) map[ast.
 	return avoid
 }
 
-func applyEx(snap *refactor.Snapshot, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, pattern, subst ast.Node) {
+func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, pattern, subst ast.Node) {
 	m := &matcher{
 		fset:    snap.Fset(),
 		wildOK:  true,
 		wildPos: codePos,
-		pkg:     typesPkg,
-		info:    info,
+		pkgX:    typesPkg,
+		infoX:   info,
 		env:     make(map[string]ast.Expr),
 	}
 
 	var avoid map[ast.Node]bool
 
-	snap.ForEachTargetFile(func(target *refactor.Package, file *ast.File) {
-		refactor.Walk(file, func(stack []ast.Node) {
-			// Do not match against the bare selector within a qualified identifier.
-			if len(stack) >= 2 {
-				if sel, ok := stack[1].(*ast.SelectorExpr); ok && sel.Sel == stack[0] {
-					if x, ok := sel.X.(*ast.Ident); ok {
-						if _, ok := info.Uses[x].(*types.PkgName); ok {
-							return
-						}
-					}
-				}
+	for _, target := range targets {
+		m.pkgY = target.Types
+		m.infoY = target.TypesInfo
+		for _, file := range target.Files {
+			if file.Syntax == nil {
+				continue
 			}
-
-			if m.match(pattern, stack[0]) {
-				// Do not apply substitution in its own definition.
-				if avoid == nil {
-					avoid = avoidOf(snap, info, subst)
-				}
-				for _, n := range stack {
-					if avoid[n] {
-						return
-					}
-				}
-
-				// Do not substitute a function call on LHS of assignment.
-				// TODO: Generalize.
-				if as, ok := stack[1].(*ast.AssignStmt); ok {
-					for _, l := range as.Lhs {
-						if l == stack[0] {
-							if _, isCall := subst.(*ast.CallExpr); isCall {
+			refactor.Walk(file.Syntax, func(stack []ast.Node) {
+				// Do not match against the bare selector within a qualified identifier.
+				if len(stack) >= 2 {
+					if sel, ok := stack[1].(*ast.SelectorExpr); ok && sel.Sel == stack[0] {
+						if x, ok := sel.X.(*ast.Ident); ok {
+							if _, ok := info.Uses[x].(*types.PkgName); ok {
 								return
 							}
 						}
 					}
 				}
 
-				matchPos := stack[0].Pos()
-				// Substitute pattern variable values from match into substitution text.
-				// Because these values are coming from the same source location
-				// as they will eventually be placed into, import references and the
-				// like are all OK and don't need updating.
-				buf := edit.NewBuffer([]byte(code[subst.Pos()-codePos : subst.End()-codePos]))
-				refactor.Walk(subst, func(stack []ast.Node) {
-					id, ok := stack[0].(*ast.Ident)
-					if !ok {
-						return
+				if m.match(pattern, stack[0]) {
+					// Do not apply substitution in its own definition.
+					if avoid == nil {
+						avoid = avoidOf(snap, info, subst)
 					}
-
-					// Pattern variable -> captured subexpression.
-					if xobj, ok := m.wildcardObj(id); ok {
-						replx := m.env[xobj.Name()]
-						// TODO: captured subexpression may need import fixes?
-						repl := string(snap.Text(replx.Pos(), replx.End()))
-						if needParen(replx, stack) {
-							repl = "(" + repl + ")"
-						}
-						buf.Replace(int(id.Pos()-subst.Pos()), int(id.End()-subst.Pos()), repl)
-						return
-					}
-
-					// If this ID is p.ID where p is a package,
-					// make sure we have the import available,
-					// or if this is package p, remove the p.
-					if len(stack) >= 2 {
-						if sel, ok := stack[1].(*ast.SelectorExpr); ok {
-							if xid, ok := sel.X.(*ast.Ident); ok {
-								if pid, ok := info.Uses[xid].(*types.PkgName); ok {
-									snap.NeedImport(matchPos, xid.Name, pid.Imported())
-								}
-							}
+					for _, n := range stack {
+						if avoid[n] {
 							return
 						}
 					}
 
-					// Is this ID referring to a global in the typesPkg? If so:
-					// - Is the typesPkg the target package? Then make sure the global isn't shadowed.
-					// - Otherwise, make sure the target has an import, and qualify the identifier.
-					obj := info.Uses[id]
-					if obj == nil {
-						panic("NO USES")
-					}
-					if obj != nil && typesPkg != nil && obj.Parent() == typesPkg.Scope() {
-						if typesPkg == target.Types {
-							if xobj := snap.LookupAt(id.Name, matchPos); xobj != obj {
-								snap.ErrorAt(matchPos, "%s is shadowed in replacement - %v", id.Name, xobj)
+					// Do not substitute a function call
+					// on LHS of assignment, or as argument to unary &.
+					// TODO: Generalize.
+					if _, isCall := subst.(*ast.CallExpr); isCall {
+						if as, ok := stack[1].(*ast.AssignStmt); ok {
+							for _, l := range as.Lhs {
+								if l == stack[0] {
+									return
+								}
 							}
-						} else {
-							snap.NeedImport(matchPos, typesPkg.Name(), typesPkg)
-							buf.Replace(int(id.Pos()-subst.Pos()), int(id.Pos()-subst.Pos()), typesPkg.Name()+".")
+						}
+						if addr, ok := stack[1].(*ast.UnaryExpr); ok && false {
+							if addr.Op == token.AND && addr.X == stack[0] {
+								return
+							}
 						}
 					}
-				})
 
-				// Now substitute completed substitution text into actual program.
-				substX := subst
-				if id, ok := substX.(*ast.Ident); ok {
-					if xobj, ok := m.wildcardObj(id); ok {
-						substX = m.env[xobj.Name()]
+					matchPos := stack[0].Pos()
+					// Substitute pattern variable values from match into substitution text.
+					// Because these values are coming from the same source location
+					// as they will eventually be placed into, import references and the
+					// like are all OK and don't need updating.
+					buf := edit.NewBuffer([]byte(code[subst.Pos()-codePos : subst.End()-codePos]))
+					refactor.Walk(subst, func(stack []ast.Node) {
+						id, ok := stack[0].(*ast.Ident)
+						if !ok {
+							return
+						}
+
+						// Pattern variable -> captured subexpression.
+						if xobj, ok := m.wildcardObj(id); ok {
+							replx := m.env[xobj.Name()]
+							// TODO: captured subexpression may need import fixes?
+							repl := string(snap.Text(replx.Pos(), replx.End()))
+							if needParen(replx, stack) {
+								repl = "(" + repl + ")"
+							}
+							buf.Replace(int(id.Pos()-subst.Pos()), int(id.End()-subst.Pos()), repl)
+							return
+						}
+
+						// If this ID is p.ID where p is a package,
+						// make sure we have the import available,
+						// or if this is package p, remove the p.
+						if len(stack) >= 2 {
+							if sel, ok := stack[1].(*ast.SelectorExpr); ok {
+								if xid, ok := sel.X.(*ast.Ident); ok {
+									if pid, ok := info.Uses[xid].(*types.PkgName); ok {
+										snap.NeedImport(matchPos, xid.Name, pid.Imported())
+									}
+								}
+								return
+							}
+						}
+
+						// Is this ID referring to a global in the typesPkg? If so:
+						// - Is the typesPkg the target package? Then make sure the global isn't shadowed.
+						// - Otherwise, make sure the target has an import, and qualify the identifier.
+						obj := info.Uses[id]
+						if obj == nil {
+							panic("NO USES")
+						}
+						if obj != nil && typesPkg != nil && obj.Parent() == typesPkg.Scope() {
+							if typesPkg == target.Types {
+								if xobj := snap.LookupAt(id.Name, matchPos); xobj != obj {
+									snap.ErrorAt(matchPos, "%s is shadowed in replacement - %v", id.Name, xobj)
+								}
+							} else {
+								snap.NeedImport(matchPos, typesPkg.Name(), typesPkg)
+								buf.Replace(int(id.Pos()-subst.Pos()), int(id.Pos()-subst.Pos()), typesPkg.Name()+".")
+							}
+						}
+					})
+
+					// Now substitute completed substitution text into actual program.
+					substX := subst
+					if id, ok := substX.(*ast.Ident); ok {
+						if xobj, ok := m.wildcardObj(id); ok {
+							substX = m.env[xobj.Name()]
+						}
 					}
+					substText := buf.String()
+					if needParen(substX, stack) {
+						substText = "(" + substText + ")"
+					}
+					replaceMinimal(snap, stack[0].Pos(), stack[0].End(), substText)
 				}
-				substText := buf.String()
-				if needParen(substX, stack) {
-					substText = "(" + substText + ")"
-				}
-
-				// Do not replace text that isn't changing.
-				// Helps with x.M() -> x.R() applied to z.M().M().M().
-				old := string(snap.Text(stack[0].Pos(), stack[0].End()))
-				i := 0
-				for i < len(old) && i < len(substText) && old[i] == substText[i] {
-					i++
-				}
-				snap.ReplaceAt(stack[0].Pos()+token.Pos(i), stack[0].End(), substText[i:])
-			}
-		})
-	})
+			})
+		}
+	}
 	return
 }
 
@@ -429,3 +467,82 @@ func importPath(s *ast.ImportSpec) string {
 type importerFunc func(string) (*types.Package, error)
 
 func (f importerFunc) Import(s string) (*types.Package, error) { return f(s) }
+
+func replaceMinimal(snap *refactor.Snapshot, pos, end token.Pos, repl string) {
+	text := snap.Text(pos, end)
+	posX := 0
+	posY := 0
+	for _, r := range commonRanges(string(text), repl) {
+		snap.ReplaceAt(pos+token.Pos(posX), pos+token.Pos(r.posX), repl[posY:r.posY])
+		posX = r.posX + r.n
+		posY = r.posY + r.n
+	}
+	snap.ReplaceAt(pos+token.Pos(posX), end, repl[posY:])
+}
+
+type rangePair struct{ posX, posY, n int }
+
+func commonRanges(x, y string) []rangePair {
+	// t[i,j] = length of longest common substring of x[i:], y[j:]
+	// t[i,len(y)] = t[len(x),j] = 0
+	// t[i,j] = max {
+	//	t[i+1,j]
+	//	t[i,j+1]
+	//	t[i+1,j+1] + 1 only if x[i] == y[j]
+	// }
+	t := make([][]int, len(x)+1)
+	data := make([]int, (len(x)+1)*(len(y)+1))
+	for i := range t {
+		t[i], data = data[:len(y)+1], data[len(y)+1:]
+	}
+
+	for i := len(x) - 1; i >= 0; i-- {
+		for j := len(y) - 1; j >= 0; j-- {
+			m := t[i+1][j]
+			if m < t[i][j+1] {
+				m = t[i][j+1]
+			}
+			if x[i] == y[j] {
+				if m < t[i+1][j+1]+1 {
+					m = t[i+1][j+1] + 1
+				}
+			}
+			t[i][j] = m
+		}
+	}
+
+	/*
+		fmt.Println(x)
+		fmt.Println(y)
+		for _, row := range t {
+			fmt.Println(row)
+		}
+	*/
+
+	i := 0
+	j := 0
+	var pairs []rangePair
+	for i < len(x) && j < len(y) {
+		switch m := t[i][j]; {
+		case m == t[i+1][j+1]+1 && x[i] == y[j]:
+			// Start a new range.
+			posX := i
+			posY := j
+			for i < len(x) && j < len(y) && t[i][j] == t[i+1][j+1]+1 && x[i] == y[j] {
+				i++
+				j++
+			}
+			pairs = append(pairs, rangePair{posX, posY, i - posX})
+
+		case m == t[i+1][j]:
+			i++
+
+		case m == t[i][j+1]:
+			j++
+
+		default:
+			panic("inconsistent")
+		}
+	}
+	return pairs
+}

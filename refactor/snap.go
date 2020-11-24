@@ -220,6 +220,9 @@ func (r *Refactor) Load() (*Snapshot, error) {
 		if err != nil {
 			return nil, fmt.Errorf("loading packages: %v", err)
 		}
+		if jp.Name == "" {
+			continue
+		}
 
 		// The forms we expect to see are:
 		//	p (the regular package)
@@ -601,7 +604,7 @@ func (s *Snapshot) check(p *Package) {
 	}
 
 	conf := &types.Config{
-		Error:    func(error) {}, // do not die on first error
+		Error:    func(err error) { s.saveErrors(err) }, // do not die on first error
 		Importer: &snapImporter{s, p},
 		Sizes:    s.sizes,
 	}
@@ -621,7 +624,7 @@ func (s *Snapshot) check(p *Package) {
 	}
 	tpkg, err := conf.Check(p.PkgPath, s.fset, files, info)
 	if err != nil {
-		s.saveErrors(err)
+		return
 	}
 	p.Types = tpkg
 	p.TypesInfo = info

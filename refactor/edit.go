@@ -131,11 +131,12 @@ func (s *Snapshot) CreateFile(p *Package, name, text string) *ast.File {
 	name = s.r.shortPath(filepath.Join(p.Dir, name))
 	// TODO
 	if text == "" {
-		text = "package " + p.Types.Name() + "\n"
+		text = "package " + p.Name + "\n"
 	}
 	base := s.fset.Base()
 	syntax, err := parser.ParseFile(s.fset, name, text, parser.ParseComments)
 	if err != nil {
+		println("TEXT", text)
 		panic("CreateFile parse: " + err.Error())
 	}
 	ed := &Edit{

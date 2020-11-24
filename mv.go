@@ -67,12 +67,13 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 		return
 	}
 
+
 	srcs, dst := items[:len(items)-1], items[len(items)-1]
 	if dst.Kind == refactor.ItemDir || dst.Kind == refactor.ItemFile {
 		var dstPkg *refactor.Package
 		if dst.Kind == refactor.ItemDir {
 			for _, pkg := range snap.Packages() {
-				if pkg.PkgPath == dst.Name {
+				if pkg.PkgPath == dst.Name && pkg.Name != "" {
 					dstPkg = pkg
 					break
 				}

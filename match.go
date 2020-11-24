@@ -20,11 +20,13 @@ import (
 )
 
 type matcher struct {
-	info    *types.Info
 	fset    *token.FileSet
 	wildOK  bool
 	wildPos token.Pos
-	pkg     *types.Package
+	pkgX    *types.Package
+	pkgY    *types.Package
+	infoX   *types.Info
+	infoY   *types.Info
 	env     map[string]ast.Expr
 	verbose bool
 }
@@ -111,8 +113,8 @@ func (m *matcher) matchExpr(x, y ast.Expr) bool {
 
 	// Object identifiers (including pkg-qualified ones)
 	// are handled semantically, not syntactically.
-	xobj := isRef(x, m.info)
-	yobj := isRef(y, m.info)
+	xobj := isRef(x, m.infoX)
+	yobj := isRef(y, m.infoY)
 	if xobj != nil {
 		return xobj == yobj
 	}
@@ -154,7 +156,7 @@ func (m *matcher) matchExpr(x, y ast.Expr) bool {
 	case *ast.SelectorExpr:
 		y := y.(*ast.SelectorExpr)
 		return m.matchSelectorExpr(x, y) &&
-			m.info.Selections[x].Obj() == m.info.Selections[y].Obj()
+			m.infoX.Selections[x].Obj() == m.infoY.Selections[y].Obj()
 
 	case *ast.IndexExpr:
 		y := y.(*ast.IndexExpr)
@@ -177,7 +179,7 @@ func (m *matcher) matchExpr(x, y ast.Expr) bool {
 	case *ast.CallExpr:
 		y := y.(*ast.CallExpr)
 		match := m.matchExpr // function call
-		if m.info.Types[x.Fun].IsType() {
+		if m.infoX.Types[x.Fun].IsType() {
 			match = m.matchType // type conversion
 		}
 		return x.Ellipsis.IsValid() == y.Ellipsis.IsValid() &&
@@ -220,14 +222,14 @@ func (m *matcher) matchExprs(xx, yy []ast.Expr) bool {
 
 // matchType reports whether the two type ASTs denote identical types.
 func (m *matcher) matchType(x, y ast.Expr) bool {
-	tx := m.info.Types[x].Type
-	ty := m.info.Types[y].Type
+	tx := m.infoX.Types[x].Type
+	ty := m.infoY.Types[y].Type
 	return types.Identical(tx, ty)
 }
 
 func (m *matcher) wildcardObj(x ast.Expr) (*types.Var, bool) {
 	if x, ok := x.(*ast.Ident); ok && x != nil && m.wildOK {
-		if xobj, ok := m.info.Uses[x].(*types.Var); ok && xobj.Pos() >= m.wildPos {
+		if xobj, ok := m.infoX.Uses[x].(*types.Var); ok && xobj.Pos() >= m.wildPos {
 			return xobj, true
 		}
 	}
@@ -237,9 +239,13 @@ func (m *matcher) wildcardObj(x ast.Expr) (*types.Var, bool) {
 func (m *matcher) matchSelectorExpr(x, y *ast.SelectorExpr) bool {
 	if xobj, ok := m.wildcardObj(x.X); ok {
 		field := x.Sel.Name
-		yt := m.info.TypeOf(y.X)
-		o, _, _ := types.LookupFieldOrMethod(yt, true, m.pkg, field)
+		yt := m.infoX.TypeOf(y.X)
+		o, _, _ := types.LookupFieldOrMethod(yt, true, m.pkgY, field)
+		if o == nil {
+			o, _, _ = types.LookupFieldOrMethod(yt, true, m.pkgX, field)
+		}
 		if o != nil {
+
 			m.env[xobj.Name()] = y.X // record binding
 			return true
 		}
@@ -256,7 +262,7 @@ func (m *matcher) matchWildcard(xobj *types.Var, y ast.Expr) bool {
 	}
 
 	// Check that y is assignable to the declared type of the param.
-	yt := m.info.TypeOf(y)
+	yt := m.infoY.TypeOf(y)
 	if yt == nil {
 		// y has no type.
 		// Perhaps it is an *ast.Ellipsis in [...]T{}, or
