@@ -66,6 +66,14 @@ func run(rf *refactor.Refactor, script string) error {
 
 	text := script
 	lastCmd := ""
+
+	defer func() {
+		if e := recover(); e != nil {
+			println("panic executing: " + lastCmd)
+			panic(e)
+		}
+	}()
+
 	for text != "" {
 		line, rest, err := readLine(text)
 		if err != nil {

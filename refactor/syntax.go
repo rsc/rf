@@ -139,6 +139,12 @@ func WalkRange(n ast.Node, lo, hi token.Pos, f func(stack []ast.Node)) {
 	var stack []ast.Node
 	var stackPos int
 
+	if n == (*ast.File)(nil) {
+		// Happens for deleted files, where f.Syntax == nil.
+		// Easier to catch here than fix every call site.
+		return
+	}
+
 	ast.Inspect(n, func(n ast.Node) bool {
 		if n == nil {
 			stackPos++
