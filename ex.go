@@ -143,6 +143,15 @@ func parseEx(snap *refactor.Snapshot, text string) (targets []*refactor.Package,
 			}
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
+		case "avoid":
+			if importOK {
+				fmt.Fprintf(&buf, "func _() {\n")
+				importOK = false
+			}
+			// TODO: parse parse expr
+			stmt = strings.TrimSpace(stmt)
+			fmt.Fprintf(&buf, "_ = %s\n", strings.TrimPrefix(stmt, "avoid"))
+
 		default:
 			// Must be rewrite x -> y.
 			// No possible error from cutGo
@@ -170,7 +179,7 @@ func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) 
 	codePos := token.Pos(snap.Fset().Base())
 	f, err := parser.ParseFile(snap.Fset(), "ex.go", code, 0)
 	if err != nil {
-		return nil, fmt.Errorf("internal error: %v", err)
+		return nil, fmt.Errorf("internal error: %v\ncode:\n%s", err, code)
 	}
 
 	var errors int
@@ -217,9 +226,32 @@ func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) 
 		return nil, fmt.Errorf("errors in example:\n%s", code)
 	}
 
+	var avoids []types.Object
 	body := f.Decls[len(f.Decls)-1].(*ast.FuncDecl).Body.List
 
 	for _, stmt := range body {
+		avoid, ok := stmt.(*ast.AssignStmt)
+		if ok {
+			// New thing to avoid.
+			var obj types.Object
+			switch n := avoid.Rhs[0].(type) {
+			default:
+				return nil, fmt.Errorf("cannot avoid %T", n)
+
+			case *ast.Ident:
+				obj = info.Uses[n]
+
+			case *ast.SelectorExpr:
+				sel := info.Selections[n]
+				if sel != nil {
+					obj = sel.Obj()
+				}
+			}
+			if obj == nil {
+				return nil, fmt.Errorf("cannot find avoid %v", astString(snap.Fset(), avoid.Rhs[0]))
+			}
+			avoids = append(avoids, obj)
+		}
 		stmt, ok := stmt.(*ast.BlockStmt)
 		if !ok { // var decl
 			continue
@@ -233,32 +265,38 @@ func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) 
 		if x, ok := subst.(*ast.ExprStmt); ok {
 			subst = x.X
 		}
-		applyEx(snap, targets, code, codePos, typesPkg, info, pattern, subst)
+		applyEx(snap, targets, avoids, code, codePos, typesPkg, info, pattern, subst)
 	}
 	return nil, nil
 }
 
-func avoidOf(snap *refactor.Snapshot, info *types.Info, subst ast.Node) map[ast.Node]bool {
+func avoidOf(snap *refactor.Snapshot, avoids []types.Object, info *types.Info, subst ast.Node) map[ast.Node]bool {
 	avoid := make(map[ast.Node]bool)
+	avoidObj := func(obj types.Object) {
+		stack := snap.SyntaxAt(obj.Pos())
+		for i := 0; i < len(stack); i++ {
+			switch n := stack[i].(type) {
+			case *ast.FuncDecl, *ast.GenDecl:
+				avoid[n] = true
+			}
+		}
+	}
+	for _, obj := range avoids {
+		avoidObj(obj)
+	}
 	refactor.Walk(subst, func(stack []ast.Node) {
 		id, ok := stack[0].(*ast.Ident)
 		if !ok {
 			return
 		}
 		if obj := info.Uses[id]; obj != nil {
-			stack := snap.SyntaxAt(obj.Pos())
-			for i := 0; i < len(stack); i++ {
-				switch n := stack[i].(type) {
-				case *ast.FuncDecl, *ast.GenDecl:
-					avoid[n] = true
-				}
-			}
+			avoidObj(obj)
 		}
 	})
 	return avoid
 }
 
-func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, pattern, subst ast.Node) {
+func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []types.Object, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, pattern, subst ast.Node) {
 	m := &matcher{
 		fset:    snap.Fset(),
 		wildOK:  true,
@@ -292,7 +330,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, code string, 
 				if m.match(pattern, stack[0]) {
 					// Do not apply substitution in its own definition.
 					if avoid == nil {
-						avoid = avoidOf(snap, info, subst)
+						avoid = avoidOf(snap, avoids, info, subst)
 					}
 					for _, n := range stack {
 						if avoid[n] {

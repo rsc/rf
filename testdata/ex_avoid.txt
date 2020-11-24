@@ -1,0 +1,40 @@
+ex {
+	avoid F
+	avoid T.M
+	avoid (*T).P
+	var i int
+	i -> i +1
+}
+-- x.go --
+package p
+
+func F() int {
+	return 1
+}
+
+func G() int {
+	return 1
+}
+
+type T int
+
+func (T) M() int {
+	return 1
+}
+
+func (*T) P() int {
+	return 1
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -5,7 +5,7 @@
+ }
+
+ func G() int {
+-	return 1
++	return 1 + 1
+ }
+
+ type T int

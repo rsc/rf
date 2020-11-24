@@ -219,6 +219,15 @@ func (m *matcher) matchExprs(xx, yy []ast.Expr) bool {
 	}
 	return true
 }
+// typeOf returns the type of x, which must be an expression (not a type).
+// Otherwise after 'var i int', int itself matches i.
+func typeOf(info *types.Info, x ast.Expr) types.Type {
+	tv := info.Types[x]
+	if tv.IsType() {
+		return nil
+	}
+	return tv.Type
+}
 
 // matchType reports whether the two type ASTs denote identical types.
 func (m *matcher) matchType(x, y ast.Expr) bool {
@@ -239,13 +248,12 @@ func (m *matcher) wildcardObj(x ast.Expr) (*types.Var, bool) {
 func (m *matcher) matchSelectorExpr(x, y *ast.SelectorExpr) bool {
 	if xobj, ok := m.wildcardObj(x.X); ok {
 		field := x.Sel.Name
-		yt := m.infoX.TypeOf(y.X)
+		yt := typeOf(m.infoX, y.X)
 		o, _, _ := types.LookupFieldOrMethod(yt, true, m.pkgY, field)
 		if o == nil {
 			o, _, _ = types.LookupFieldOrMethod(yt, true, m.pkgX, field)
 		}
 		if o != nil {
-
 			m.env[xobj.Name()] = y.X // record binding
 			return true
 		}
@@ -262,7 +270,7 @@ func (m *matcher) matchWildcard(xobj *types.Var, y ast.Expr) bool {
 	}
 
 	// Check that y is assignable to the declared type of the param.
-	yt := m.infoY.TypeOf(y)
+	yt := typeOf(m.infoY, y)
 	if yt == nil {
 		// y has no type.
 		// Perhaps it is an *ast.Ellipsis in [...]T{}, or
