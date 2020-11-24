@@ -155,11 +155,13 @@ func run(rf *refactor.Refactor, script string) error {
 func readLine(text string) (line, rest string, err error) {
 	text = strings.TrimLeft(text, " \t\n")
 	var (
-		keep  bytes.Buffer
-		punct []byte
-		start int
-		quote byte
-		escNL bool
+		keep     bytes.Buffer
+		punct    []byte
+		sawPunct bool
+		start    int
+		quote    byte
+		escNL    bool
+		regexp   bool
 	)
 	for i := 0; i < len(text); i++ {
 		switch c := text[i]; {
@@ -181,13 +183,25 @@ func readLine(text string) (line, rest string, err error) {
 		case c == '"', c == '\'', c == '`':
 			quote = c
 
-		case c == '\\' && (quote == '\'' || quote == '"'):
+		case !sawPunct && c == ':':
+			if i+1 < len(text) && text[i+1] == '/' {
+				regexp = true
+				i++
+			}
+
+		case regexp && c == '/':
+			regexp = false
+
+		case c == '\\' && (quote == '\'' || quote == '"' || regexp):
 			i++
 
 		case c == '\n' && (quote == '\'' || quote == '"'):
 			return "", "", fmt.Errorf("newline in %c-quoted string", quote)
 
-		case quote != 0:
+		case c == '\n' && regexp:
+			return "", "", fmt.Errorf("newline in regexp search")
+
+		case quote != 0 || regexp:
 			continue
 
 		case c == '\\':
@@ -212,6 +226,7 @@ func readLine(text string) (line, rest string, err error) {
 			return keep.String(), rest, nil
 
 		case c == '{', c == '[', c == '(':
+			sawPunct = true
 			punct = append(punct, c)
 
 		case c == '}', c == ']', c == ')':
