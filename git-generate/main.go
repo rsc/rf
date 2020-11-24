@@ -105,22 +105,31 @@ func main() {
 
 	if what == "HEAD" {
 		// Reset files to HEAD^ in preparation for reapplying HEAD commit.
-		gitDir(gitdir, "checkout", "HEAD^", ".")
+		// For a brief moment HEAD is pointing at HEAD^, which is unfortunate.
+		// It would be very nice if there were some single command to do this pair,
+		// which is to say, to update the working directory but not the branch head.
+		// Checkout followed by the removal loop, as in the else case below,
+		// is not enough because it does not remove files that are added in HEAD.
+		// (git status thinks they are fine!)
+		// Perhaps we can list them some other way.
+		now := strings.TrimSpace(git("rev-parse", "HEAD"))
+		git("reset", "-q", "--hard", "HEAD^")
+		git("reset", "-q", now)
 	} else {
 		// Applying script on top of HEAD itself.
 		gitDir(gitdir, "checkout", "HEAD", ".")
-	}
 
-	// Checkout doesn't remove files that have been git added,
-	// such as those that might be left over from a conflicting cherry-pick or merge.
-	// Remove them ourselves.
-	for _, line := range strings.Split(gitDir(gitdir, "status", "--porcelain=1"), "\n") {
-		if len(line) >= 4 && (line[0] == 'A' && line[1] != 'D' || line[0] == 'U') {
-			name := filepath.Join(gitdir, line[3:])
-			if err := os.Remove(name); err != nil {
-				log.Fatal(err)
+		// Checkout doesn't remove files that have been git added,
+		// such as those that might be left over from a conflicting cherry-pick or merge.
+		// Remove them ourselves.
+		for _, line := range strings.Split(gitDir(gitdir, "status", "--porcelain=1"), "\n") {
+			if len(line) >= 4 && (line[0] == 'A' && line[1] != 'D' || line[0] == 'U') {
+				name := filepath.Join(gitdir, line[3:])
+				if err := os.Remove(name); err != nil {
+					log.Fatal(err)
+				}
+				os.Remove(filepath.Dir(name)) // in case directory is now empty: NOT RemoveAll
 			}
-			os.Remove(filepath.Dir(name)) // in case directory is now empty: NOT RemoveAll
 		}
 	}
 
