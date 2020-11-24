@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 
-	"rsc.io/rf/edit"
 	"rsc.io/rf/refactor"
 )
 
@@ -188,6 +187,9 @@ func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) 
 			if strings.HasSuffix(err.Error(), " is not used") {
 				return
 			}
+			if strings.HasSuffix(err.Error(), " (type) is not an expression") {
+				return
+			}
 			errors++
 			snap.ErrorAt(token.NoPos, "%v", err)
 		},
@@ -289,7 +291,7 @@ func avoidOf(snap *refactor.Snapshot, avoids []types.Object, info *types.Info, s
 		if !ok {
 			return
 		}
-		if obj := info.Uses[id]; obj != nil {
+		if obj := info.Uses[id]; obj != nil && obj.Parent() != types.Universe {
 			avoidObj(obj)
 		}
 	})
@@ -327,6 +329,12 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 					}
 				}
 
+				if _, ok := stack[0].(*ast.ParenExpr); ok {
+					// Matcher is blind to parens.
+					// Let the inside match, and avoid a spurious match here too.
+					return
+				}
+
 				if m.match(pattern, stack[0]) {
 					// Do not apply substitution in its own definition.
 					if avoid == nil {
@@ -361,7 +369,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 					// Because these values are coming from the same source location
 					// as they will eventually be placed into, import references and the
 					// like are all OK and don't need updating.
-					buf := edit.NewBuffer([]byte(code[subst.Pos()-codePos : subst.End()-codePos]))
+					buf := refactor.NewBufferAt(snap, subst.Pos(), []byte(code[subst.Pos()-codePos:subst.End()-codePos]))
 					refactor.Walk(subst, func(stack []ast.Node) {
 						id, ok := stack[0].(*ast.Ident)
 						if !ok {
@@ -376,7 +384,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 							if needParen(replx, stack) {
 								repl = "(" + repl + ")"
 							}
-							buf.Replace(int(id.Pos()-subst.Pos()), int(id.End()-subst.Pos()), repl)
+							buf.Replace(id.Pos(), id.End(), repl)
 							return
 						}
 
@@ -408,7 +416,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 								}
 							} else {
 								snap.NeedImport(matchPos, typesPkg.Name(), typesPkg)
-								buf.Replace(int(id.Pos()-subst.Pos()), int(id.Pos()-subst.Pos()), typesPkg.Name()+".")
+								buf.Insert(id.Pos(), typesPkg.Name()+".")
 							}
 						}
 					})

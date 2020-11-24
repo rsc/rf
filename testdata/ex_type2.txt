@@ -1,0 +1,32 @@
+add T \
+	type IT = T
+ex {
+	avoid T
+	avoid (*T).M
+	T -> IT
+}
+-- x.go --
+package p
+
+type T struct{ next *T }
+
+func (t *T) M() { var x *T = new(T); _ = x }
+
+var x T
+var y T = x
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,7 +2,9 @@
+
+ type T struct{ next *T }
+
++type IT = T
++
+ func (t *T) M() { var x *T = new(T); _ = x }
+
+-var x T
+-var y T = x
++var x IT
++var y IT = x

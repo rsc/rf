@@ -219,6 +219,7 @@ func (m *matcher) matchExprs(xx, yy []ast.Expr) bool {
 	}
 	return true
 }
+
 // typeOf returns the type of x, which must be an expression (not a type).
 // Otherwise after 'var i int', int itself matches i.
 func typeOf(info *types.Info, x ast.Expr) types.Type {

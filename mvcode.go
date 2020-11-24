@@ -23,7 +23,7 @@ func transplant(snap *refactor.Snapshot, code string, src, dst token.Pos, moves 
 	}
 	dstPkg := snap.PackageAt(dst)
 
-	ed := refactor.NewBufferAt(src, []byte(code))
+	ed := refactor.NewBufferAt(snap, src, []byte(code))
 	refactor.WalkRange(srcFile, src, src+token.Pos(len(code)), func(stack []ast.Node) {
 		id, ok := stack[0].(*ast.Ident)
 		if !ok {

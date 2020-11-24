@@ -20,7 +20,6 @@ import (
 	"strings"
 
 	"rsc.io/rf/diff"
-	"rsc.io/rf/edit"
 )
 
 type Edit struct {
@@ -47,37 +46,92 @@ func (e *Edit) NewText() ([]byte, error) {
 // A Buffer is a queue of edits to apply to a file text.
 // It's like edit.Buffer but uses token.Pos as coordinate space.
 type Buffer struct {
-	pos token.Pos
-	end token.Pos
-	ed  *edit.Buffer
+	s   *Snapshot
+	pos token.Pos // position of old[0]
+	end token.Pos // pos+len(old)
+	old []byte
+	q   edits
 }
 
-func NewBufferAt(pos token.Pos, text []byte) *Buffer {
-	return &Buffer{pos: pos, end: pos + token.Pos(len(text)), ed: edit.NewBuffer(text)}
+// An edit records a single text modification: change the bytes in [start,end) to new.
+type edit struct {
+	pos   token.Pos
+	end   token.Pos
+	new   string
+	force bool
 }
 
+// An edits is a list of edits that is sortable by start offset, breaking ties by end offset.
+type edits []edit
+
+func (x edits) Len() int      { return len(x) }
+func (x edits) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
+func (x edits) Less(i, j int) bool {
+	// Earlier edits first.
+	if x[i].pos != x[j].pos {
+		return x[i].pos < x[j].pos
+	}
+	// Insert before delete/replace.
+	if (x[i].end == x[i].pos) != (x[j].end == x[j].pos) {
+		return x[i].end == x[i].pos
+	}
+	// Force delete before other delete/replace.
+	if x[i].force != x[j].force {
+		return x[i].force
+	}
+	return false
+}
+
+func NewBufferAt(s *Snapshot, pos token.Pos, text []byte) *Buffer {
+	return &Buffer{s: s, pos: pos, end: pos + token.Pos(len(text)), old: text}
+}
+
+func (b *Buffer) edit(pos, end token.Pos, new string, force bool) {
+	if end < pos || pos < 0 || end > b.end {
+		panic("invalid edit position")
+	}
+	b.q = append(b.q, edit{pos: pos, end: end, new: new, force: force})
+}
+
+func (b *Buffer) Delete(pos, end token.Pos)              { b.edit(pos, end, "", false) }
+func (b *Buffer) ForceDelete(pos, end token.Pos)         { b.edit(pos, end, "", true) }
+func (b *Buffer) Insert(pos token.Pos, new string)       { b.edit(pos, pos, new, false) }
+func (b *Buffer) Replace(pos, end token.Pos, new string) { b.edit(pos, end, new, false) }
+
+// Bytes returns a new byte slice containing the original data
+// with the queued edits applied.
 func (b *Buffer) Bytes() []byte {
-	return b.ed.Bytes()
+	// Sort edits by starting position and then by ending position.
+	// Breaking ties by ending position allows insertions at point x
+	// to be applied before a replacement of the text at [x, y).
+	// Given multiple inserts at the same position, keep in order.
+	sort.Stable(b.q)
+
+	var new []byte
+	offset := b.pos
+	for i := 0; i < len(b.q); i++ {
+		e := b.q[i]
+		if e.pos < offset {
+			e0 := b.q[i-1]
+			panic(fmt.Sprintf("%v: overlapping edits: [%d,%d)->%q, [%d,%d)->%q", b.s.Addr(e0.pos), e0.pos, e0.end, e0.new, e.pos, e.end, e.new))
+		}
+		new = append(new, b.old[offset-b.pos:e.pos-b.pos]...)
+		if e.force {
+			for i+1 < len(b.q) && !b.q[i+1].force && b.q[i+1].pos < e.end {
+				i++
+			}
+		}
+		offset = e.end
+		new = append(new, e.new...)
+	}
+	new = append(new, b.old[offset-b.pos:]...)
+	return new
 }
 
+// String returns a string containing the original data
+// with the queued edits applied.
 func (b *Buffer) String() string {
-	return b.ed.String()
-}
-
-func (b *Buffer) Delete(pos, end token.Pos) {
-	b.ed.Delete(int(pos-b.pos), int(end-b.pos))
-}
-
-func (b *Buffer) ForceDelete(pos, end token.Pos) {
-	b.ed.ForceDelete(int(pos-b.pos), int(end-b.pos))
-}
-
-func (b *Buffer) Insert(pos token.Pos, new string) {
-	b.ed.Insert(int(pos-b.pos), new)
-}
-
-func (b *Buffer) Replace(pos, end token.Pos, new string) {
-	b.ed.Replace(int(pos-b.pos), int(end-b.pos), new)
+	return string(b.Bytes())
 }
 
 func (s *Snapshot) editAt(pos token.Pos) *Edit {
@@ -91,7 +145,7 @@ func (s *Snapshot) editAt(pos token.Pos) *Edit {
 	if f == nil {
 		panic("file not found")
 	}
-	b := NewBufferAt(pos-token.Pos(posn.Offset), f.Text)
+	b := NewBufferAt(s, pos-token.Pos(posn.Offset), f.Text)
 	ed = &Edit{Name: name, OldText: f.Text, Buffer: b}
 	s.edits[name] = ed
 	return ed
@@ -142,7 +196,7 @@ func (s *Snapshot) CreateFile(p *Package, name, text string) *ast.File {
 	ed := &Edit{
 		Name:   name,
 		Create: true,
-		Buffer: NewBufferAt(token.Pos(base), []byte(text)),
+		Buffer: NewBufferAt(s, token.Pos(base), []byte(text)),
 		File:   &File{Name: name, Syntax: syntax},
 	}
 	s.edits[name] = ed
@@ -168,7 +222,12 @@ func (s *Snapshot) CreatePackage(pkgpath string) (*Package, error) {
 	}
 
 	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("%s exists but not loaded", pkgpath)
+		files, _ := ioutil.ReadDir(dir)
+		for _, file := range files {
+			if strings.HasSuffix(file.Name(), ".go") {
+				return nil, fmt.Errorf("%s exists but not loaded", pkgpath)
+			}
+		}
 	}
 
 	p := &Package{
@@ -345,7 +404,7 @@ func (s *Snapshot) Gofmt() {
 			if err := format.Node(&out, fset, file); err != nil {
 				continue
 			}
-			ed.Buffer = NewBufferAt(^token.Pos(0), out.Bytes())
+			ed.Buffer = NewBufferAt(s, ^token.Pos(0), out.Bytes())
 		}
 	}
 }
