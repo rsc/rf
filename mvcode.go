@@ -289,16 +289,36 @@ func declRange(snap *refactor.Snapshot, obj types.Object) (pos, end token.Pos) {
 		pos++
 	}
 	d := codeDecl(snap, obj)
+
+	pastEOL := func(pos token.Pos) token.Pos {
+		p := pos
+		for int(p-startFile) < len(text) && text[p-startFile] == ' ' {
+			p++
+		}
+		if int(p-startFile)+2 <= len(text) && text[p-startFile] == '/' && text[p-startFile+1] == '/' {
+			for int(p-startFile) < len(text) && text[p-startFile] != '\n' {
+				p++
+			}
+		}
+		if int(p-startFile) == len(text) {
+			return p
+		}
+		if int(p-startFile) < len(text) && text[p-startFile] == '\n' {
+			return p + 1
+		}
+		return pos
+	}
+
 	for i := 0; i < len(srcFile.Decls); i++ {
 		if srcFile.Decls[i] == d {
 			break
 		}
-		pos = srcFile.Decls[i].End()
+		pos = pastEOL(srcFile.Decls[i].End())
 		if int(pos-startFile) < len(text) && text[pos-startFile] == '\n' {
 			pos++
 		}
 	}
-	end = d.End()
+	end = pastEOL(d.End())
 	if int(end-startFile) < len(text) && text[end-startFile] == '\n' {
 		end++
 	}
