@@ -126,7 +126,7 @@ func main() {
 		for _, line := range strings.Split(gitDir(gitdir, "status", "--porcelain=1"), "\n") {
 			if len(line) >= 4 {
 				switch line[0:2] {
-				case "AD", "UU", "DU":
+				case "AD", "A ", "UU", "DU":
 					name := filepath.Join(gitdir, line[3:])
 					os.Remove(name)
 					if _, err := os.Stat(name); err == nil {
