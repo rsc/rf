@@ -527,6 +527,10 @@ func (s *Snapshot) typeCheck() {
 		for p := range ready {
 			s.check(p)
 			delete(ready, p)
+			if p.Types == nil {
+				// type-check failed - do not wake importers
+				continue
+			}
 			for _, p1 := range rdeps[p] {
 				delete(waiting[p1], p)
 				if len(waiting[p1]) == 0 {
@@ -536,7 +540,7 @@ func (s *Snapshot) typeCheck() {
 			}
 		}
 	}
-	if len(waiting) > 0 {
+	if len(waiting) > 0 && s.Errors() == 0 {
 		fmt.Println("type check stalled:")
 		for p, n := range waiting {
 			fmt.Println(p.PkgPath, n, rdeps[p])
