@@ -1,0 +1,20 @@
+rm I.B
+-- x.go --
+package m
+
+type I interface {
+	A()
+	B()
+	C()
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,6 +2,5 @@
+
+ type I interface {
+ 	A()
+-	B()
+ 	C()
+ }

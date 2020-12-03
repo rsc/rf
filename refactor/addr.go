@@ -513,7 +513,17 @@ func lookupTypeX(p *Package, outer *Item, typ types.Type, name string) *Item {
 		typ = tn.Underlying()
 	}
 
-	if typ, ok := typ.(*types.Struct); ok {
+	switch typ := typ.(type) {
+	case *types.Interface:
+		n := typ.NumMethods()
+		for i := 0; i < n; i++ {
+			f := typ.Method(i)
+			if f.Name() == name {
+				return &Item{Kind: ItemMethod, Obj: f, Outer: outer, Name: outer.Name + "." + name}
+			}
+		}
+
+	case *types.Struct:
 		n := typ.NumFields()
 		for i := 0; i < n; i++ {
 			f := typ.Field(i)
@@ -522,6 +532,7 @@ func lookupTypeX(p *Package, outer *Item, typ types.Type, name string) *Item {
 			}
 		}
 	}
+
 	return &Item{Kind: ItemNotFound, Outer: outer, Name: outer.Name + "." + name}
 }
 
