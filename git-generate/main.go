@@ -78,7 +78,7 @@ func main() {
 		} else {
 			log.Fatalf("cannot find rebase or cherry-pick conflict in progress")
 		}
-		log.Printf("using %s to resolve merge conflict", what)
+		log.Printf("using %s to resolve conflict", what)
 	}
 
 	var script []string
