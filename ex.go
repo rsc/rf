@@ -109,7 +109,7 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 	importOK := true
 	body := func() {
 		if importOK {
-			fmt.Fprintf(&buf, "func _() { type any interface{}\n")
+			fmt.Fprintf(&buf, "func _() { type any interface{}\nvar __avoid__, __strict__ func(...interface{})\n_, _ = __avoid__, __strict__\n")
 			importOK = false
 		}
 	}
@@ -155,11 +155,16 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 			body()
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
-		case "avoid":
+		case "avoid", "strict":
+			stmt = strings.TrimSpace(strings.TrimPrefix(stmt, kw))
+			if stmt == "" {
+				return nil, fmt.Errorf("missing arguments for %s", kw)
+			}
+			if _, err := parser.ParseExpr("f(" + stmt + ")"); err != nil {
+				return nil, fmt.Errorf("parsing %s: %v", stmt, err)
+			}
 			body()
-			// TODO: parse parse expr
-			stmt = strings.TrimSpace(strings.TrimPrefix(stmt, "avoid"))
-			fmt.Fprintf(&buf, "_ = %s\n", stmt)
+			fmt.Fprintf(&buf, "__%s__(%s)\n", kw, stmt)
 
 		default:
 			// Must be rewrite x -> y.
@@ -261,31 +266,49 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 	}
 
 	var avoids []types.Object
+	stricts := map[types.Object]bool{}
+
 	body := f.Decls[len(f.Decls)-1].(*ast.FuncDecl).Body.List
 
 	var examples []example
 	for _, stmt := range body {
-		avoid, ok := stmt.(*ast.AssignStmt)
-		if ok {
-			// New thing to avoid.
-			var obj types.Object
-			switch n := avoid.Rhs[0].(type) {
-			default:
-				return nil, fmt.Errorf("cannot avoid %T", n)
+		if stmt, ok := stmt.(*ast.ExprStmt); ok {
+			if pragma, ok := stmt.X.(*ast.CallExpr); ok {
+				kw := strings.Trim(pragma.Fun.(*ast.Ident).Name, "_")
 
-			case *ast.Ident:
-				obj = info.Uses[n]
+				for _, n := range pragma.Args {
+					// New thing to avoid.
+					var obj types.Object
+					switch n := n.(type) {
+					default:
+						return nil, fmt.Errorf("cannot %s %T", kw, n)
 
-			case *ast.SelectorExpr:
-				sel := info.Selections[n]
-				if sel != nil {
-					obj = sel.Obj()
+					case *ast.Ident:
+						obj = info.Uses[n]
+
+					case *ast.SelectorExpr:
+						sel := info.Selections[n]
+						if sel != nil {
+							obj = sel.Obj()
+						}
+					}
+					if obj == nil {
+						return nil, fmt.Errorf("cannot find %s %v", kw, astString(snap.Fset(), n))
+					}
+					switch kw {
+					case "avoid":
+						avoids = append(avoids, obj)
+					case "strict":
+						if obj, ok := obj.(*types.Var); ok && obj.Pos() >= codePos {
+							stricts[obj] = true
+						} else {
+							return nil, fmt.Errorf("strict: %v is not a pattern variable", obj)
+						}
+					default:
+						panic("unreachable")
+					}
 				}
 			}
-			if obj == nil {
-				return nil, fmt.Errorf("cannot find avoid %v", astString(snap.Fset(), avoid.Rhs[0]))
-			}
-			avoids = append(avoids, obj)
 		}
 		stmt, ok := stmt.(*ast.BlockStmt)
 		if !ok { // var decl
@@ -310,7 +333,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 		}
 		examples = append(examples, example{pattern, subst})
 	}
-	applyEx(snap, args.targets, avoids, args.code, codePos, typesPkg, info, examples)
+	applyEx(snap, args.targets, avoids, stricts, args.code, codePos, typesPkg, info, examples)
 	return nil, nil
 }
 
@@ -340,7 +363,7 @@ func avoidOf(snap *refactor.Snapshot, avoids []types.Object, info *types.Info, s
 	return avoid
 }
 
-func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []types.Object, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, examples []example) {
+func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []types.Object, stricts map[types.Object]bool, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, examples []example) {
 	m := &matcher{
 		fset:    snap.Fset(),
 		wildOK:  true,
@@ -349,6 +372,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 		infoX:   info,
 		env:     make(map[string]ast.Expr),
 		envT:    make(map[string]types.Type),
+		stricts: stricts,
 	}
 
 	var avoid map[ast.Node]bool

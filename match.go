@@ -30,6 +30,7 @@ type matcher struct {
 	infoY   *types.Info
 	env     map[string]ast.Expr
 	envT    map[string]types.Type
+	stricts map[types.Object]bool
 	verbose bool
 }
 
@@ -333,11 +334,21 @@ func (m *matcher) matchWildcard(xobj types.Object, y ast.Expr) bool {
 		// the difference between T{v} and T{k:v} for structs.
 		return false
 	}
-	if !m.assignableTo(yt, xobj.Type()) {
-		if m.verbose {
-			fmt.Fprintf(os.Stderr, "%s not assignable to %s\n", yt, xobj.Type())
+
+	if m.stricts[xobj] {
+		if !m.identical(yt, xobj.Type()) {
+			if m.verbose {
+				fmt.Fprintf(os.Stderr, "%s not identical to %s\n", yt, xobj.Type())
+			}
+			return false
 		}
-		return false
+	} else {
+		if !m.assignableTo(yt, xobj.Type()) {
+			if m.verbose {
+				fmt.Fprintf(os.Stderr, "%s not assignable to %s\n", yt, xobj.Type())
+			}
+			return false
+		}
 	}
 
 	// A wildcard matches any expression.

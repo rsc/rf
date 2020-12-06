@@ -1,0 +1,48 @@
+ex {
+  var x, y interface{}
+  var z1, z2 *int
+  strict y, z1, z2
+  x == y -> true
+  z1 == z2 -> false
+}
+-- x.go --
+package m
+
+var i1, i2 interface{}
+var p1, p2 *int
+
+var (
+	_ = i1 == i2
+	_ = i1 == p2
+	_ = i1 == nil
+
+	_ = p1 == i2
+	_ = p1 == p2
+	_ = p1 == nil
+
+	_ = nil == i2
+	_ = nil == p2
+)
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -4,14 +4,14 @@
+ var p1, p2 *int
+
+ var (
+-	_ = i1 == i2
++	_ = true
+ 	_ = i1 == p2
+ 	_ = i1 == nil
+
+-	_ = p1 == i2
+-	_ = p1 == p2
++	_ = true
++	_ = false
+ 	_ = p1 == nil
+
+-	_ = nil == i2
++	_ = true
+ 	_ = nil == p2
+ )
