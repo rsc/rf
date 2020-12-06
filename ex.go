@@ -778,7 +778,7 @@ func assigneeType(stack []ast.Node, info *types.Info) types.Type {
 		}
 
 		// Function call.
-		sig := tv.Type.(*types.Signature)
+		sig := tv.Type.Underlying().(*types.Signature)
 		params := sig.Params()
 		last := params.Len() - 1
 		for i, arg := range parent.Args {

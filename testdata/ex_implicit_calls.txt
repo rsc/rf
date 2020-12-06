@@ -35,6 +35,10 @@ func _() {
 	(*state).ptr(&s, n, n)
 
 	func(Aux) {}(n)
+
+	type G func(Aux, interface{})
+	var g G
+	g(n, n)
 }
 -- stdout --
 diff old/x.go new/x.go
@@ -57,7 +61,7 @@ diff old/x.go new/x.go
  func (state) val(interface{}, Aux)
  func (*state) ptr(Aux, interface{})
 
-@@ -13,18 +17,18 @@
+@@ -13,22 +17,22 @@
 
  func _() {
  	var n Node
@@ -82,4 +86,9 @@ diff old/x.go new/x.go
 
 -	func(Aux) {}(n)
 +	func(Aux) {}(OldNode{n})
+
+ 	type G func(Aux, interface{})
+ 	var g G
+-	g(n, n)
++	g(OldNode{n}, n)
  }
