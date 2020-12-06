@@ -1,0 +1,50 @@
+mv F:/BEGIN/+0,/END/-0 New
+-- x.go --
+package p
+
+func F(int) int {
+	who := "world"
+	for {
+		if true {
+			// BEGIN
+			switch 1 {
+			case 1:
+				if who == "world" {
+					return 1
+				}
+			}
+			return 2
+			// END
+		}
+	}
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -5,14 +5,18 @@
+ 	for {
+ 		if true {
+ 			// BEGIN
+-			switch 1 {
+-			case 1:
+-				if who == "world" {
+-					return 1
+-				}
+-			}
+-			return 2
++			return New(who)
+ 			// END
+ 		}
+ 	}
+ }
++
++func New(who string) int {
++	switch 1 {
++	case 1:
++		if who == "world" {
++			return 1
++		}
++	}
++	return 2
++}

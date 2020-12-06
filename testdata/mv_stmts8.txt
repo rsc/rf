@@ -1,0 +1,29 @@
+mv F:/BEGIN/+0,/END/-0 New
+-- x.go --
+package p
+
+func F(int) {
+	who := "world"
+	for {
+		switch 1 {
+		case 1:
+			// BEGIN
+			if who == "world" {
+				return
+			}
+			if who == "ken" {
+				continue
+			}
+			if who == "gri" {
+				break
+			}
+			// END
+		}
+	}
+}
+-- stderr --
+x.go:9:1: multiple control flow exits from moved code:
+	x.go:10:5: return
+	x.go:13:5: continue
+	x.go:16:5: break
+	x.go:18:1: implicit break

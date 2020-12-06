@@ -1,0 +1,28 @@
+mv F:/fmt.Fprintf/,$ Print
+-- x.go --
+package p
+
+import (
+	"fmt"
+	"io"
+)
+
+func F(w io.Writer) {
+	who := "world"
+	msg := fmt.Sprintf("hello, %v", who)
+	fmt.Fprintf(w, "%s\n", msg)
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -8,5 +8,9 @@
+ func F(w io.Writer) {
+ 	who := "world"
+ 	msg := fmt.Sprintf("hello, %v", who)
++	Print(w, msg)
++}
++
++func Print(w io.Writer, msg string) {
+ 	fmt.Fprintf(w, "%s\n", msg)
+ }

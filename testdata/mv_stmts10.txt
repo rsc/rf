@@ -1,0 +1,39 @@
+mv F:/BEGIN/+0,/END/-0 New
+-- x.go --
+package p
+
+func F(int) {
+	who := "world"
+	// BEGIN
+	for {
+		switch 1 {
+		case 1:
+			if who == "world" {
+				return
+			}
+		}
+	}
+	// END
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -3,6 +3,11 @@
+ func F(int) {
+ 	who := "world"
+ 	// BEGIN
++	New(who)
++	// END
++}
++
++func New(who string) {
+ 	for {
+ 		switch 1 {
+ 		case 1:
+@@ -11,5 +16,4 @@
+ 			}
+ 		}
+ 	}
+-	// END
+ }
