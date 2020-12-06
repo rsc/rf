@@ -469,7 +469,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 							case *types.TypeName:
 								typ := m.envT[xobj.Name()]
 								repl = types.TypeString(typ, func(pkg *types.Package) string {
-									if pkg == typesPkg {
+									if pkg == target.Types {
 										return ""
 									}
 									// TODO(mdempsky): Handle missing and renamed imports.

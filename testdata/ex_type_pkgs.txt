@@ -1,0 +1,40 @@
+ex . ./sub {
+  type T any
+  map[string]T -> map[int]T
+}
+-- x.go --
+package m
+
+type A int
+
+var _ map[string]A
+-- sub/sub.go --
+package sub
+
+import "m"
+
+type B int
+
+var _ map[string]m.A
+var _ map[string]B
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,4 +2,4 @@
+
+ type A int
+
+-var _ map[string]A
++var _ map[int]A
+diff old/sub/sub.go new/sub/sub.go
+--- old/sub/sub.go
++++ new/sub/sub.go
+@@ -4,5 +4,5 @@
+
+ type B int
+
+-var _ map[string]m.A
+-var _ map[string]B
++var _ map[int]m.A
++var _ map[int]B
