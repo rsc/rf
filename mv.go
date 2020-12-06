@@ -67,7 +67,6 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 		return
 	}
 
-
 	srcs, dst := items[:len(items)-1], items[len(items)-1]
 	if dst.Kind == refactor.ItemDir || dst.Kind == refactor.ItemFile {
 		var dstPkg *refactor.Package

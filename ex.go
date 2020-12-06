@@ -18,19 +18,29 @@ import (
 	"rsc.io/rf/refactor"
 )
 
+// exArgs holds the result of parsing an ex command invocation.
+type exArgs struct {
+	targets []*refactor.Package
+	code    string
+}
+
 type example struct {
 	old ast.Node
 	new ast.Node
 }
 
 func cmdEx(snap *refactor.Snapshot, text string) {
-	targets, code, err := parseEx(snap, text)
+	args, err := parseEx(snap, text)
 	if err != nil {
 		snap.ErrorAt(token.NoPos, "ex: %v", err)
 		return
 	}
+	if args == nil {
+		// Trust that parseEx printed an error.
+		return
+	}
 
-	if _, err := checkEx(snap, targets, code); err != nil {
+	if _, err := checkEx(snap, args); err != nil {
 		snap.ErrorAt(token.NoPos, "ex: %v", err)
 		return
 	}
@@ -42,7 +52,7 @@ func cutGo(text, sep string) (before, after string, ok bool, err error) {
 	return before, after, ok, nil
 }
 
-func parseEx(snap *refactor.Snapshot, text string) (targets []*refactor.Package, code string, err error) {
+func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 	fset := token.NewFileSet()
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -55,7 +65,7 @@ func parseEx(snap *refactor.Snapshot, text string) (targets []*refactor.Package,
 		return
 	}
 	before := strings.TrimSpace(text[:i])
-	targets = []*refactor.Package{snap.Target()}
+	targets := []*refactor.Package{snap.Target()}
 	if before != "" {
 		targets = nil
 		items, _ := snap.EvalList(before)
@@ -106,15 +116,15 @@ func parseEx(snap *refactor.Snapshot, text string) (targets []*refactor.Package,
 		}
 		switch kw := strings.Fields(stmt)[0]; kw {
 		case "package", "type", "func", "const":
-			return nil, "", fmt.Errorf("%s declaration not allowed", kw)
+			return nil, fmt.Errorf("%s declaration not allowed", kw)
 
 		case "defer", "for", "go", "if", "return", "select", "switch":
-			return nil, "", fmt.Errorf("%s statement not allowed", kw)
+			return nil, fmt.Errorf("%s statement not allowed", kw)
 
 		case "import":
 			file, err := parser.ParseFile(fset, "ex.go", "package p;"+stmt, 0)
 			if err != nil {
-				return nil, "", fmt.Errorf("parsing %s: %v", stmt, err)
+				return nil, fmt.Errorf("parsing %s: %v", stmt, err)
 			}
 			imp := file.Imports[0]
 			pkg := importPath(imp)
@@ -125,16 +135,16 @@ func parseEx(snap *refactor.Snapshot, text string) (targets []*refactor.Package,
 				}
 			}
 			if !have {
-				return nil, "", fmt.Errorf("import %q not available", pkg)
+				return nil, fmt.Errorf("import %q not available", pkg)
 			}
 			if !importOK {
-				return nil, "", fmt.Errorf("parsing %s: import too late", stmt)
+				return nil, fmt.Errorf("parsing %s: import too late", stmt)
 			}
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
 		case "var":
 			if _, err := parser.ParseExpr("func() {" + stmt + "}"); err != nil {
-				return nil, "", fmt.Errorf("parsing %s: %v", stmt, err)
+				return nil, fmt.Errorf("parsing %s: %v", stmt, err)
 			}
 			if importOK {
 				fmt.Fprintf(&buf, "func _() {\n")
@@ -148,8 +158,8 @@ func parseEx(snap *refactor.Snapshot, text string) (targets []*refactor.Package,
 				importOK = false
 			}
 			// TODO: parse parse expr
-			stmt = strings.TrimSpace(stmt)
-			fmt.Fprintf(&buf, "_ = %s\n", strings.TrimPrefix(stmt, "avoid"))
+			stmt = strings.TrimSpace(strings.TrimPrefix(stmt, "avoid"))
+			fmt.Fprintf(&buf, "_ = %s\n", stmt)
 
 		default:
 			// Must be rewrite x -> y.
@@ -157,28 +167,42 @@ func parseEx(snap *refactor.Snapshot, text string) (targets []*refactor.Package,
 			// because we already processed it once.
 			before, after, ok, _ := cutGo(stmt, "->")
 			if !ok {
-				return nil, "", fmt.Errorf("parsing: %s: missing -> in rewrite", stmt)
+				return nil, fmt.Errorf("parsing: %s: missing -> in rewrite", stmt)
 			}
+			before = strings.TrimSpace(before)
+			after = strings.TrimSpace(after)
+			if before == "" {
+				return nil, fmt.Errorf("missing pattern in example: %s", stmt)
+			}
+			if after == "" {
+				return nil, fmt.Errorf("missing substitution in example: %s", stmt)
+			}
+
 			// TODO: parse stmt / parse expr
 			if importOK {
 				fmt.Fprintf(&buf, "func _() {\n")
 				importOK = false
 			}
-			fmt.Fprintf(&buf, "{\n{%s}\n{%s}\n}\n", before, after)
+			fmt.Fprintf(&buf, "{\n{%s}\n", before)
+			if after != "!" {
+				fmt.Fprintf(&buf, "{%s}\n", after)
+			}
+			fmt.Fprintf(&buf, "}\n")
 		}
 	}
 	if importOK {
-		return nil, "", fmt.Errorf("no example rewrites")
+		return nil, fmt.Errorf("no example rewrites")
 	}
 	fmt.Fprintf(&buf, "}\n")
-	return targets, buf.String(), nil
+
+	return &exArgs{targets: targets, code: buf.String()}, nil
 }
 
-func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) ([]example, error) {
+func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 	codePos := token.Pos(snap.Fset().Base())
-	f, err := parser.ParseFile(snap.Fset(), "ex.go", code, 0)
+	f, err := parser.ParseFile(snap.Fset(), "ex.go", args.code, 0)
 	if err != nil {
-		return nil, fmt.Errorf("internal error: %v\ncode:\n%s", err, code)
+		return nil, fmt.Errorf("internal error: %v\ncode:\n%s", err, args.code)
 	}
 
 	var errors int
@@ -205,8 +229,8 @@ func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) 
 
 	var typesPkg *types.Package
 	var info *types.Info
-	if true || len(targets) == 1 {
-		p := targets[0]
+	if true || len(args.targets) == 1 {
+		p := args.targets[0]
 		typesPkg = p.Types
 		info = p.TypesInfo
 	} else {
@@ -225,12 +249,13 @@ func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) 
 	err = check.Files([]*ast.File{f})
 	_ = err // already handled in conf.Error
 	if errors != 0 {
-		return nil, fmt.Errorf("errors in example:\n%s", code)
+		return nil, fmt.Errorf("errors in example:\n%s", args.code)
 	}
 
 	var avoids []types.Object
 	body := f.Decls[len(f.Decls)-1].(*ast.FuncDecl).Body.List
 
+	var examples []example
 	for _, stmt := range body {
 		avoid, ok := stmt.(*ast.AssignStmt)
 		if ok {
@@ -263,12 +288,15 @@ func checkEx(snap *refactor.Snapshot, targets []*refactor.Package, code string) 
 		if x, ok := pattern.(*ast.ExprStmt); ok {
 			pattern = x.X
 		}
-		subst = stmt.List[1].(*ast.BlockStmt).List[0]
-		if x, ok := subst.(*ast.ExprStmt); ok {
-			subst = x.X
+		if len(stmt.List) >= 2 {
+			subst = stmt.List[1].(*ast.BlockStmt).List[0]
+			if x, ok := subst.(*ast.ExprStmt); ok {
+				subst = x.X
+			}
 		}
-		applyEx(snap, targets, avoids, code, codePos, typesPkg, info, pattern, subst)
+		examples = append(examples, example{pattern, subst})
 	}
+	applyEx(snap, args.targets, avoids, args.code, codePos, typesPkg, info, examples)
 	return nil, nil
 }
 
@@ -298,7 +326,7 @@ func avoidOf(snap *refactor.Snapshot, avoids []types.Object, info *types.Info, s
 	return avoid
 }
 
-func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []types.Object, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, pattern, subst ast.Node) {
+func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []types.Object, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, examples []example) {
 	m := &matcher{
 		fset:    snap.Fset(),
 		wildOK:  true,
@@ -335,7 +363,19 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 					return
 				}
 
-				if m.match(pattern, stack[0]) {
+				for _, example := range examples {
+					pattern, subst := example.old, example.new
+
+					if !m.match(pattern, stack[0]) {
+						continue
+					}
+
+					// Matched a "!" pattern.
+					// Return to avoid trying further patterns.
+					if subst == nil {
+						return
+					}
+
 					// Do not apply substitution in its own definition.
 					if avoid == nil {
 						avoid = avoidOf(snap, avoids, info, subst)
@@ -433,6 +473,10 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 						substText = "(" + substText + ")"
 					}
 					replaceMinimal(snap, stack[0].Pos(), stack[0].End(), substText)
+
+					// We're done with this AST node.
+					// Don't try any further patterns.
+					return
 				}
 			})
 		}

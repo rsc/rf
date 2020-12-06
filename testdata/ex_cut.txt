@@ -1,0 +1,37 @@
+ex {
+  var a, b *int
+  a == nil -> !
+  a == b -> *a == *b
+
+  var i, j interface{}
+  i == a -> !
+  i == j -> true
+}
+-- x.go --
+package m
+
+var p, q *int
+var _ = p == q
+var _ = p == nil
+
+var x, y interface{}
+var _ = x == y
+var _ = x == p
+var _ = x == nil
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,10 +1,10 @@
+ package m
+
+ var p, q *int
+-var _ = p == q
++var _ = *p == *q
+ var _ = p == nil
+
+ var x, y interface{}
+-var _ = x == y
++var _ = true
+ var _ = x == p
+ var _ = x == nil
