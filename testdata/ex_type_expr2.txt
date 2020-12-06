@@ -1,0 +1,44 @@
+ex {
+  type T any
+  var x Old
+  var m map[Old]T
+  map[Old]T -> map[New]T
+  m[x] -> m[New(x)]
+  delete(m, x) -> delete(m, New(x))
+}
+-- x.go --
+package m
+
+type Old int
+type New = Old
+
+var _ = make(map[Old]int, 10)
+var _ = map[Old]float64{}
+
+func _(m map[Old]string, x Old) {
+	m[x] = "hi"
+	_ = m[x]
+	delete(m, x)
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -3,11 +3,11 @@
+ type Old int
+ type New = Old
+
+-var _ = make(map[Old]int, 10)
+-var _ = map[Old]float64{}
++var _ = make(map[New]int, 10)
++var _ = map[New]float64{}
+
+-func _(m map[Old]string, x Old) {
+-	m[x] = "hi"
+-	_ = m[x]
+-	delete(m, x)
++func _(m map[New]string, x Old) {
++	m[New(x)] = "hi"
++	_ = m[New(x)]
++	delete(m, New(x))
+ }

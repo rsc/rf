@@ -1,0 +1,106 @@
+ex {
+  []uint -> []int
+  [3]any -> [3]int
+
+  float64 -> float32
+  *rune -> string
+}
+-- x.go --
+package m
+
+var _ []uint
+
+var _ []uint32
+
+var _ struct { f, g []uint; h []uint }
+
+var _ map[uint][]uint
+
+var _ [][]uint
+
+var _ chan []uint
+
+type _ []uint
+
+func _(a []uint, b, c []uint, d ...[]uint) []uint
+
+var _ = []uint(nil)
+
+var _ = []uint{1, 2, 3}
+
+var _ = make([]uint, 10)
+
+var _ = [...]uint{1, 2, 3}
+
+var _ = [...]uint{1, 2, 3, 4, 5}
+
+var _ float64
+
+func _() {
+	type float64 string
+	var _ float64
+}
+
+var _ *rune
+
+var _ *int32
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,38 +1,41 @@
+ package m
+
+-var _ []uint
++var _ []int
+
+ var _ []uint32
+
+-var _ struct { f, g []uint; h []uint }
++var _ struct {
++	f, g []int
++	h    []int
++}
+
+-var _ map[uint][]uint
++var _ map[uint][]int
+
+-var _ [][]uint
++var _ [][]int
+
+-var _ chan []uint
++var _ chan []int
+
+-type _ []uint
++type _ []int
+
+-func _(a []uint, b, c []uint, d ...[]uint) []uint
++func _(a []int, b, c []int, d ...[]int) []int
+
+-var _ = []uint(nil)
++var _ = []int(nil)
+
+-var _ = []uint{1, 2, 3}
++var _ = []int{1, 2, 3}
+
+-var _ = make([]uint, 10)
++var _ = make([]int, 10)
+
+-var _ = [...]uint{1, 2, 3}
++var _ = [3]int{1, 2, 3}
+
+ var _ = [...]uint{1, 2, 3, 4, 5}
+
+-var _ float64
++var _ float32
+
+ func _() {
+ 	type float64 string
+ 	var _ float64
+ }
+
+-var _ *rune
++var _ string
+
+-var _ *int32
++var _ string

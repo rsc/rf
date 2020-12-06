@@ -1,0 +1,62 @@
+ex {
+  # any matches any type,
+  # without introducing a binding.
+  [1]map[any]any -> int
+
+  # Declared types do introduce bindings.
+  # Note: back matches are based on type identity,
+  # not syntactic form.
+  type k any
+  [2]map[k]k -> []k
+
+  # Declared types match only types whose underlying type
+  # is assignable to the declared type's underlying type.
+  type v int
+  [3]map[k]v -> func() (k, v)
+}
+-- x.go --
+package m
+
+import "go/token"
+
+var (
+	_ [1]map[int]int
+	_ [1]map[string]interface{}
+
+	_ [2]map[[4]*func(named int) (res int)][2 + 2]*func(int) int
+	_ [2]map[float64]string
+
+	_ [3]map[byte]int
+	_ [3]map[byte]uint
+	_ [3]map[*interface{ M() }]MyInt
+	_ [3]map[token.Pos]token.Pos
+)
+
+type MyInt int
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -3,16 +3,16 @@
+ import "go/token"
+
+ var (
+-	_ [1]map[int]int
+-	_ [1]map[string]interface{}
++	_ int
++	_ int
+
+-	_ [2]map[[4]*func(named int) (res int)][2 + 2]*func(int) int
++	_ [][4]*func(named int) (res int)
+ 	_ [2]map[float64]string
+
+-	_ [3]map[byte]int
++	_ func() (byte, int)
+ 	_ [3]map[byte]uint
+-	_ [3]map[*interface{ M() }]MyInt
+-	_ [3]map[token.Pos]token.Pos
++	_ func() (*interface{ M() }, MyInt)
++	_ func() (token.Pos, token.Pos)
+ )
+
+ type MyInt int

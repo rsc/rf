@@ -1,0 +1,59 @@
+ex {
+  import "io"
+
+  type T interface { M() any }
+  new(map[T]int) -> "ok"
+
+  type W io.Writer
+  new(W) -> "ok"
+}
+-- x.go --
+package m
+
+import "os"
+
+type A int
+
+func (A) M() float64
+
+type B struct{ string }
+
+func (*B) M() [10]struct{}
+
+type C B
+
+type D [10]int
+
+var (
+	_ = new(map[A]int)
+	_ = new(map[*A]int)
+	_ = new(map[B]int)
+	_ = new(map[*B]int)
+	_ = new(map[C]int)
+	_ = new(map[D]int)
+
+	_ = new(os.File)
+	_ = new(*os.File)
+)
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -15,13 +15,13 @@
+ type D [10]int
+
+ var (
+-	_ = new(map[A]int)
+-	_ = new(map[*A]int)
++	_ = "ok"
++	_ = "ok"
+ 	_ = new(map[B]int)
+-	_ = new(map[*B]int)
++	_ = "ok"
+ 	_ = new(map[C]int)
+ 	_ = new(map[D]int)
+
+ 	_ = new(os.File)
+-	_ = new(*os.File)
++	_ = "ok"
+ )

@@ -107,6 +107,12 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 		fmt.Fprintf(&buf, "package ex\n")
 	}
 	importOK := true
+	body := func() {
+		if importOK {
+			fmt.Fprintf(&buf, "func _() { type any interface{}\n")
+			importOK = false
+		}
+	}
 	for text != "" {
 		stmt, rest, _ := cutAny(text, ";\n") // TODO
 		text = rest
@@ -115,7 +121,7 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 			continue
 		}
 		switch kw := strings.Fields(stmt)[0]; kw {
-		case "package", "type", "func", "const":
+		case "package", "func", "const":
 			return nil, fmt.Errorf("%s declaration not allowed", kw)
 
 		case "defer", "for", "go", "if", "return", "select", "switch":
@@ -142,21 +148,15 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 			}
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
-		case "var":
+		case "type", "var":
 			if _, err := parser.ParseExpr("func() {" + stmt + "}"); err != nil {
 				return nil, fmt.Errorf("parsing %s: %v", stmt, err)
 			}
-			if importOK {
-				fmt.Fprintf(&buf, "func _() {\n")
-				importOK = false
-			}
+			body()
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
 		case "avoid":
-			if importOK {
-				fmt.Fprintf(&buf, "func _() {\n")
-				importOK = false
-			}
+			body()
 			// TODO: parse parse expr
 			stmt = strings.TrimSpace(strings.TrimPrefix(stmt, "avoid"))
 			fmt.Fprintf(&buf, "_ = %s\n", stmt)
@@ -178,13 +178,21 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 				return nil, fmt.Errorf("missing substitution in example: %s", stmt)
 			}
 
-			// TODO: parse stmt / parse expr
-			if importOK {
-				fmt.Fprintf(&buf, "func _() {\n")
-				importOK = false
+			body()
+			if _, err := parser.ParseExpr("func() {" + before + "}"); err != nil {
+				before = "type _ " + before
+				if _, err := parser.ParseExpr("func() { " + before + "}"); err != nil {
+					return nil, fmt.Errorf("parsing %s: %v", stmt, err)
+				}
 			}
 			fmt.Fprintf(&buf, "{\n{%s}\n", before)
 			if after != "!" {
+				if _, err := parser.ParseExpr("func() {" + after + "}"); err != nil {
+					after = "type _ " + after
+					if _, err := parser.ParseExpr("func() { " + after + "}"); err != nil {
+						return nil, fmt.Errorf("parsing %s: %v", stmt, err)
+					}
+				}
 				fmt.Fprintf(&buf, "{%s}\n", after)
 			}
 			fmt.Fprintf(&buf, "}\n")
@@ -285,13 +293,19 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 		}
 		var pattern, subst ast.Node
 		pattern = stmt.List[0].(*ast.BlockStmt).List[0]
-		if x, ok := pattern.(*ast.ExprStmt); ok {
+		switch x := pattern.(type) {
+		case *ast.ExprStmt:
 			pattern = x.X
+		case *ast.DeclStmt:
+			pattern = x.Decl.(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type
 		}
 		if len(stmt.List) >= 2 {
 			subst = stmt.List[1].(*ast.BlockStmt).List[0]
-			if x, ok := subst.(*ast.ExprStmt); ok {
+			switch x := subst.(type) {
+			case *ast.ExprStmt:
 				subst = x.X
+			case *ast.DeclStmt:
+				subst = x.Decl.(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type
 			}
 		}
 		examples = append(examples, example{pattern, subst})
@@ -334,6 +348,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 		pkgX:    typesPkg,
 		infoX:   info,
 		env:     make(map[string]ast.Expr),
+		envT:    make(map[string]types.Type),
 	}
 
 	var avoid map[ast.Node]bool
@@ -418,11 +433,26 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 
 						// Pattern variable -> captured subexpression.
 						if xobj, ok := m.wildcardObj(id); ok {
-							replx := m.env[xobj.Name()]
-							// TODO: captured subexpression may need import fixes?
-							repl := string(snap.Text(replx.Pos(), replx.End()))
-							if needParen(replx, stack) {
-								repl = "(" + repl + ")"
+							var repl string
+							switch xobj := xobj.(type) {
+							case *types.Var:
+								replx := m.env[xobj.Name()]
+								// TODO: captured subexpression may need import fixes?
+								repl = string(snap.Text(replx.Pos(), replx.End()))
+								if needParen(replx, stack) {
+									repl = "(" + repl + ")"
+								}
+							case *types.TypeName:
+								typ := m.envT[xobj.Name()]
+								repl = types.TypeString(typ, func(pkg *types.Package) string {
+									if pkg == typesPkg {
+										return ""
+									}
+									// TODO(mdempsky): Handle missing and renamed imports.
+									return pkg.Name()
+								})
+							default:
+								panic("unreachable")
 							}
 							buf.Replace(id.Pos(), id.End(), repl)
 							return
@@ -465,7 +495,14 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 					substX := subst
 					if id, ok := substX.(*ast.Ident); ok {
 						if xobj, ok := m.wildcardObj(id); ok {
-							substX = m.env[xobj.Name()]
+							switch xobj := xobj.(type) {
+							case *types.Var:
+								substX = m.env[xobj.Name()]
+							case *types.TypeName:
+								panic("TODO: do we need to do anything here?")
+							default:
+								panic("unreachable")
+							}
 						}
 					}
 					substText := buf.String()
@@ -507,7 +544,9 @@ func needParen(newX ast.Node, stack []ast.Node) bool {
 		*ast.ParenExpr,
 		*ast.Ident,
 		*ast.BasicLit,
-		*ast.CompositeLit:
+		*ast.CompositeLit,
+		*ast.ArrayType,
+		*ast.MapType:
 		return false // nothing can tear these apart
 	case *ast.BinaryExpr:
 		prec = newX.Op.Precedence()

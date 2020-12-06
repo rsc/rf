@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Adapted from eg.
+// Expression matching adapted from eg;
+// type matching adapted from go/types.
 
 package main
 
@@ -28,6 +29,7 @@ type matcher struct {
 	infoX   *types.Info
 	infoY   *types.Info
 	env     map[string]ast.Expr
+	envT    map[string]types.Type
 	verbose bool
 }
 
@@ -36,6 +38,11 @@ func (m *matcher) match(x, y ast.Node) bool {
 	if len(m.env) > 0 {
 		for k := range m.env {
 			delete(m.env, k)
+		}
+	}
+	if len(m.envT) > 0 {
+		for k := range m.envT {
+			delete(m.envT, k)
 		}
 	}
 	if x == nil && y == nil {
@@ -103,8 +110,22 @@ func (m *matcher) matchStmt(x, y ast.Stmt) bool {
 // consistently match the same tree.
 //
 func (m *matcher) matchExpr(x, y ast.Expr) bool {
+	if x == nil || y == nil {
+		return x == y
+	}
+
 	x = unparen(x)
 	y = unparen(y)
+
+	xtv := m.infoX.Types[x]
+	ytv := m.infoY.Types[y]
+	if xtv.IsType() != ytv.IsType() || xtv.IsValue() != ytv.IsValue() {
+		return false
+	}
+
+	if xtv.IsType() {
+		return m.identical(xtv.Type, ytv.Type)
+	}
 
 	// Is x a wildcard?  (a reference to a 'before' parameter)
 	if xobj, ok := m.wildcardObj(x); ok {
@@ -234,13 +255,16 @@ func typeOf(info *types.Info, x ast.Expr) types.Type {
 func (m *matcher) matchType(x, y ast.Expr) bool {
 	tx := m.infoX.Types[x].Type
 	ty := m.infoY.Types[y].Type
-	return types.Identical(tx, ty)
+	return m.identical(tx, ty)
 }
 
-func (m *matcher) wildcardObj(x ast.Expr) (*types.Var, bool) {
+func (m *matcher) wildcardObj(x ast.Expr) (types.Object, bool) {
 	if x, ok := x.(*ast.Ident); ok && x != nil && m.wildOK {
-		if xobj, ok := m.infoX.Uses[x].(*types.Var); ok && xobj.Pos() >= m.wildPos {
-			return xobj, true
+		if xobj, ok := m.infoX.Uses[x]; ok && xobj.Pos() >= m.wildPos {
+			switch xobj.(type) {
+			case *types.TypeName, *types.Var:
+				return xobj, true
+			}
 		}
 	}
 	return nil, false
@@ -248,21 +272,28 @@ func (m *matcher) wildcardObj(x ast.Expr) (*types.Var, bool) {
 
 func (m *matcher) matchSelectorExpr(x, y *ast.SelectorExpr) bool {
 	if xobj, ok := m.wildcardObj(x.X); ok {
-		field := x.Sel.Name
-		yt := typeOf(m.infoX, y.X)
-		o, _, _ := types.LookupFieldOrMethod(yt, true, m.pkgY, field)
-		if o == nil {
-			o, _, _ = types.LookupFieldOrMethod(yt, true, m.pkgX, field)
-		}
-		if o != nil {
-			m.env[xobj.Name()] = y.X // record binding
-			return true
+		switch xobj := xobj.(type) {
+		case *types.Var:
+			field := x.Sel.Name
+			yt := typeOf(m.infoX, y.X)
+			o, _, _ := types.LookupFieldOrMethod(yt, true, m.pkgY, field)
+			if o == nil {
+				o, _, _ = types.LookupFieldOrMethod(yt, true, m.pkgX, field)
+			}
+			if o != nil {
+				m.env[xobj.Name()] = y.X // record binding
+				return true
+			}
+		case *types.TypeName:
+			panic("TODO: does this happen?")
+		default:
+			panic("unreachable")
 		}
 	}
 	return m.matchExpr(x.X, y.X)
 }
 
-func (m *matcher) matchWildcard(xobj *types.Var, y ast.Expr) bool {
+func (m *matcher) matchWildcard(xobj types.Object, y ast.Expr) bool {
 	name := xobj.Name()
 
 	if m.verbose {
@@ -271,8 +302,29 @@ func (m *matcher) matchWildcard(xobj *types.Var, y ast.Expr) bool {
 	}
 
 	// Check that y is assignable to the declared type of the param.
-	yt := typeOf(m.infoY, y)
+	ytv := m.infoY.Types[y]
+	yt := ytv.Type
+	switch xobj := xobj.(type) {
+	default:
+		panic("unreachable")
+	case *types.TypeName:
+		if !ytv.IsType() {
+			return false
+		}
+
+		return m.assignableTo(yt, xobj.Type())
+
+	case *types.Var:
+		if !ytv.IsValue() {
+			return false
+		}
+	}
+
 	if yt == nil {
+		// TODO(mdempsky): I think this should be impossible now
+		// thanks to the IsValue check above.
+		panic("unreachable?")
+
 		// y has no type.
 		// Perhaps it is an *ast.Ellipsis in [...]T{}, or
 		// an *ast.KeyValueExpr in T{k: v}.
@@ -281,7 +333,7 @@ func (m *matcher) matchWildcard(xobj *types.Var, y ast.Expr) bool {
 		// the difference between T{v} and T{k:v} for structs.
 		return false
 	}
-	if !types.AssignableTo(yt, xobj.Type()) {
+	if !m.assignableTo(yt, xobj.Type()) {
 		if m.verbose {
 			fmt.Fprintf(os.Stderr, "%s not assignable to %s\n", yt, xobj.Type())
 		}
@@ -310,6 +362,247 @@ func (m *matcher) matchWildcard(xobj *types.Var, y ast.Expr) bool {
 
 	m.env[name] = y // record binding
 	return true
+}
+
+// assignableTo reports whether a value of type V is assignable to a variable of type T.
+// It's like types.AssignableTo, except it supports type parameters.
+func (m *matcher) assignableTo(V, T types.Type) bool {
+	// This code is based on go/types, but reordered somewhat
+	// to avoid multiple calls to identical, as we'd then need
+	// to handle saving and restoring the environment to avoid
+	// partial failed matches from preventing later full matches.
+	//
+	// TODO(mdempsky): Double check that this is correct,
+	// and consider upstreaming the changes to go/types.
+
+	Vu := V.Underlying()
+	Tu := T.Underlying()
+
+	if v, ok := Vu.(*types.Basic); ok && v.Info()&types.IsUntyped != 0 {
+		if m.isWildcardType(T) {
+			panic(fmt.Sprintf("assignableTo untyped: %v -> %v", V, T))
+		}
+		return types.AssignableTo(Vu, Tu)
+	}
+	// Vu is typed
+
+	if m.wildOK {
+		if m.isWildcardType(T) {
+			return m.matchWildcardType(T.(*types.Named), V)
+		}
+	}
+
+	// T is an interface type and x implements T
+	if Ti, ok := Tu.(*types.Interface); ok {
+		return m.implements(V, Ti)
+	}
+
+	if isNamed(V) && isNamed(T) {
+		return m.identical(V, T)
+	}
+
+	// x is a bidirectional channel value, T is a channel
+	// type, x's type V and T have identical element types,
+	// and at least one of V or T is not a named type
+	if Vc, ok := Vu.(*types.Chan); ok && Vc.Dir() == types.SendRecv {
+		if Tc, ok := Tu.(*types.Chan); ok {
+			return m.identical(Vc.Elem(), Tc.Elem())
+		}
+	}
+
+	return m.identical(Vu, Tu)
+}
+
+func isNamed(t types.Type) bool {
+	switch t.(type) {
+	case *types.Basic, *types.Named:
+		return true
+	}
+	return false
+}
+
+func (m *matcher) isWildcardType(t types.Type) bool {
+	name, ok := t.(*types.Named)
+	return ok && name.Obj().Pos() >= m.wildPos
+}
+
+// identical reports whether x and y are identical types.
+func (m *matcher) identical(x, y types.Type) bool {
+	if x == y {
+		return true
+	}
+
+	if m.wildOK {
+		if m.isWildcardType(x) {
+			return m.matchWildcardType(x.(*types.Named), y)
+		}
+		if m.isWildcardType(y) {
+			return m.matchWildcardType(y.(*types.Named), x)
+		}
+	}
+
+	if reflect.TypeOf(x) != reflect.TypeOf(y) {
+		return false
+	}
+	switch x := x.(type) {
+	case *types.Basic:
+		y := y.(*types.Basic)
+		return x.Kind() == y.Kind()
+
+	case *types.Array:
+		y := y.(*types.Array)
+		return x.Len() == y.Len() &&
+			m.identical(x.Elem(), y.Elem())
+
+	case *types.Slice:
+		y := y.(*types.Slice)
+		return m.identical(x.Elem(), y.Elem())
+
+	case *types.Struct:
+		y := y.(*types.Struct)
+		if x.NumFields() != y.NumFields() {
+			return false
+		}
+		for i, n := 0, x.NumFields(); i < n; i++ {
+			xf := x.Field(i)
+			yf := y.Field(i)
+			if xf.Embedded() != yf.Embedded() ||
+				x.Tag(i) != y.Tag(i) ||
+				xf.Id() != yf.Id() ||
+				!m.identical(xf.Type(), yf.Type()) {
+				return false
+			}
+		}
+		return true
+
+	case *types.Pointer:
+		y := y.(*types.Pointer)
+		return m.identical(x.Elem(), y.Elem())
+
+	case *types.Tuple:
+		y := y.(*types.Tuple)
+		if x.Len() != y.Len() {
+			return false
+		}
+		for i, n := 0, x.Len(); i < n; i++ {
+			if !m.identical(x.At(i).Type(), y.At(i).Type()) {
+				return false
+			}
+		}
+		return true
+
+	case *types.Signature:
+		y := y.(*types.Signature)
+		return x.Variadic() == y.Variadic() &&
+			m.identical(x.Params(), y.Params()) &&
+			m.identical(x.Results(), y.Results())
+
+	case *types.Interface:
+		y := y.(*types.Interface)
+		if x.NumMethods() != y.NumMethods() {
+			return false
+		}
+		for i, n := 0, x.NumMethods(); i < n; i++ {
+			xm := x.Method(i)
+			ym := y.Method(i)
+			if xm.Id() != ym.Id() ||
+				!m.identical(xm.Type(), ym.Type()) {
+				return false
+			}
+		}
+		return true
+
+	case *types.Map:
+		y := y.(*types.Map)
+		return m.identical(x.Key(), y.Key()) &&
+			m.identical(x.Elem(), y.Elem())
+
+	case *types.Chan:
+		y := y.(*types.Chan)
+		return x.Dir() == y.Dir() &&
+			m.identical(x.Elem(), y.Elem())
+
+	case *types.Named:
+		y := y.(*types.Named)
+		return x.Obj() == y.Obj()
+	}
+
+	panic("unreachable")
+}
+
+func (m *matcher) implements(V types.Type, T *types.Interface) bool {
+	if T.Empty() {
+		return true
+	}
+
+	if V, ok := V.Underlying().(*types.Interface); ok {
+		j := 0
+		for i, n := 0, V.NumMethods(); i < n; i++ {
+			if Vm, Tm := V.Method(i), T.Method(j); Vm.Id() == Tm.Id() {
+				if !m.identical(Vm.Type(), Tm.Type()) {
+					return false
+				}
+				j++
+			}
+		}
+		return j == T.NumMethods()
+	}
+
+	// A concrete type V implements T if it implements all methods of T.
+	for i, n := 0, T.NumMethods(); i < n; i++ {
+		Tm := T.Method(i)
+
+		obj, _, _ := types.LookupFieldOrMethod(V, false, Tm.Pkg(), Tm.Name())
+		if Vm, ok := obj.(*types.Func); !ok || !m.identical(Vm.Type(), Tm.Type()) {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *matcher) matchWildcardType(xname *types.Named, y types.Type) bool {
+	if m.isAny(xname.Obj()) {
+		return true
+	}
+
+	name := xname.Obj().Name()
+
+	// A wildcard matches any expression.
+	// If it appears multiple times in the pattern, it must match
+	// the same expression each time.
+	// TODO(rsc): This doesn't look like the right unification logic.
+	if old, ok := m.envT[name]; ok {
+		// found existing binding
+		m.wildOK = false
+		r := m.identical(old, y)
+		if m.verbose {
+			fmt.Fprintf(os.Stderr, "%t secondary type match, primary was %s\n",
+				r, old)
+		}
+		m.wildOK = true
+		return r
+	}
+
+	if m.verbose {
+		fmt.Fprintf(os.Stderr, "primary type match\n")
+	}
+
+	m.envT[name] = y // record binding
+
+	// Treat basic types as though they were unnamed.
+	xu := xname.Underlying()
+	if _, ok := xu.(*types.Basic); ok {
+		y = y.Underlying()
+	}
+
+	return m.assignableTo(y, xu)
+}
+
+// isAny reports whether obj refers to rf's builtin "any" type.
+func (m *matcher) isAny(obj *types.TypeName) bool {
+	return obj.Name() == "any" &&
+		obj.Pos() >= m.wildPos &&
+		obj.Parent().Parent().Lookup("any") == nil
 }
 
 // isRef returns the object referred to by this (possibly qualified)

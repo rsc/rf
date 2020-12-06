@@ -1,0 +1,109 @@
+ex {
+  (***any)(nil) -> nil
+
+  type intish int
+  var m map[int]intish
+  delete(m, 42) -> m = nil
+
+  var f func(any, any)
+  var g func(intish, intish)
+  f(1, 1) -> panic(1)
+  g(2, 2) -> panic(intish(2))
+}
+-- x.go --
+package m
+
+import "go/token"
+
+var _ interface{} = (**int)(nil)
+var _ interface{} = (***int)(nil)
+var _ interface{} = (****int)(nil)
+
+type MyInt int
+
+func _(m map[int]int) { delete(m, 42) }
+
+func _(m map[int]MyInt) { delete(m, 42) }
+
+func _(m map[int]token.Pos) { delete(m, 42) }
+
+func _(m map[int]string) { delete(m, 42) }
+
+func _(m map[float64]int) { delete(m, 42) }
+
+func _(m map[int]int) { delete(m, 314) }
+
+type IntAlias = int
+
+func f(int, int)
+func g(MyInt, MyInt)
+func h(int, MyInt)
+func i(_, _ token.Pos)
+func j(IntAlias, int)
+
+func _() {
+	f(1, 1)
+	g(1, 1)
+	h(1, 1)
+	i(1, 1)
+	j(1, 1)
+
+	f(2, 2)
+	g(2, 2)
+	h(2, 2)
+	i(2, 2)
+	j(2, 2)
+}
+
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -3,16 +3,16 @@
+ import "go/token"
+
+ var _ interface{} = (**int)(nil)
+-var _ interface{} = (***int)(nil)
+-var _ interface{} = (****int)(nil)
++var _ interface{} = nil
++var _ interface{} = nil
+
+ type MyInt int
+
+-func _(m map[int]int) { delete(m, 42) }
++func _(m map[int]int) { m = nil }
+
+-func _(m map[int]MyInt) { delete(m, 42) }
++func _(m map[int]MyInt) { m = nil }
+
+-func _(m map[int]token.Pos) { delete(m, 42) }
++func _(m map[int]token.Pos) { m = nil }
+
+ func _(m map[int]string) { delete(m, 42) }
+
+@@ -29,16 +29,15 @@
+ func j(IntAlias, int)
+
+ func _() {
+-	f(1, 1)
+-	g(1, 1)
+-	h(1, 1)
+-	i(1, 1)
+-	j(1, 1)
++	panic(1)
++	panic(1)
++	panic(1)
++	panic(1)
++	panic(1)
+
+-	f(2, 2)
+-	g(2, 2)
++	panic(int(2))
++	panic(MyInt(2))
+ 	h(2, 2)
+-	i(2, 2)
+-	j(2, 2)
++	panic(token.Pos(2))
++	panic(int(2))
+ }
+-
