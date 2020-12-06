@@ -1,0 +1,85 @@
+ex {
+  var toaux func(Aux)
+  var n Node
+  implicit toaux
+
+  toaux(n) -> OldNode{n}
+}
+-- x.go --
+package m
+
+type Aux interface{ IsAux() }
+
+type Node interface { Pos(); IsAux() }
+type OldNode struct { Node }
+
+type state struct{}
+func (state) val(interface{}, Aux)
+func (*state) ptr(Aux, interface{})
+
+func f(Aux)
+
+func _() {
+	var n Node
+	f(n)
+
+	var s state
+
+	s.val(n, n)
+	s.ptr(n, n)
+
+	f := s.val
+	f(n, n)
+
+	state.val(s, n, n)
+	(*state).ptr(&s, n, n)
+
+	func(Aux) {}(n)
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,10 +2,14 @@
+
+ type Aux interface{ IsAux() }
+
+-type Node interface { Pos(); IsAux() }
+-type OldNode struct { Node }
++type Node interface {
++	Pos()
++	IsAux()
++}
++type OldNode struct{ Node }
+
+ type state struct{}
++
+ func (state) val(interface{}, Aux)
+ func (*state) ptr(Aux, interface{})
+
+@@ -13,18 +17,18 @@
+
+ func _() {
+ 	var n Node
+-	f(n)
++	f(OldNode{n})
+
+ 	var s state
+
+-	s.val(n, n)
+-	s.ptr(n, n)
++	s.val(n, OldNode{n})
++	s.ptr(OldNode{n}, n)
+
+ 	f := s.val
+-	f(n, n)
++	f(n, OldNode{n})
+
+-	state.val(s, n, n)
+-	(*state).ptr(&s, n, n)
++	state.val(s, n, OldNode{n})
++	(*state).ptr(&s, OldNode{n}, n)
+
+-	func(Aux) {}(n)
++	func(Aux) {}(OldNode{n})
+ }
