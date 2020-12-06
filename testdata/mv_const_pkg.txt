@@ -1,0 +1,32 @@
+mv T X m/q
+-- x.go --
+package p
+
+import _ "m/q"
+
+type T int
+
+const X T = 1
+-- q/q.go --
+package q
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +1 @@
+ package p
+-
+-import _ "m/q"
+-
+-type T int
+-
+-const X T = 1
+diff old/q/x.go new/q/x.go
+--- old/q/x.go
++++ new/q/x.go
+@@ -0,0 +1,5 @@
++package q
++
++type T int
++
++const X T = 1

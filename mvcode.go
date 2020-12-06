@@ -231,7 +231,7 @@ func moveCode(snap *refactor.Snapshot,
 	if srcPos == srcSplit && srcEnd == srcEOF {
 		snap.DeleteFile(srcPos)
 	} else {
-		snap.DeleteAt(srcPos, srcEnd)
+		snap.ForceDeleteAt(srcPos, srcEnd)
 	}
 }
 
