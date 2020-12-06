@@ -109,7 +109,10 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 	importOK := true
 	body := func() {
 		if importOK {
-			fmt.Fprintf(&buf, "func _() { type any interface{}\nvar __avoid__, __strict__ func(...interface{})\n_, _ = __avoid__, __strict__\n")
+			fmt.Fprintf(&buf, "func _() { type any interface{}\n")
+			for _, pragma := range []string{"avoid", "strict", "implicit"} {
+				fmt.Fprintf(&buf, "var __%s__ func(...interface{})\n_ = __%s__\n", pragma, pragma)
+			}
 			importOK = false
 		}
 	}
@@ -155,7 +158,7 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 			body()
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
-		case "avoid", "strict":
+		case "avoid", "strict", "implicit":
 			stmt = strings.TrimSpace(strings.TrimPrefix(stmt, kw))
 			if stmt == "" {
 				return nil, fmt.Errorf("missing arguments for %s", kw)
@@ -267,6 +270,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 
 	var avoids []types.Object
 	stricts := map[types.Object]bool{}
+	implicits := map[types.Object]bool{}
 
 	body := f.Decls[len(f.Decls)-1].(*ast.FuncDecl).Body.List
 
@@ -301,9 +305,18 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 					case "strict":
 						if obj, ok := obj.(*types.Var); ok && obj.Pos() >= codePos {
 							stricts[obj] = true
-						} else {
-							return nil, fmt.Errorf("strict: %v is not a pattern variable", obj)
+							break
 						}
+						return nil, fmt.Errorf("%s: %v is not a pattern variable", kw, obj)
+					case "implicit":
+						// TODO(mdempsky): Support multi-valued expressions?
+						if obj, ok := obj.(*types.Var); ok && obj.Pos() >= codePos {
+							if typ, ok := obj.Type().(*types.Signature); ok && typ.Params().Len() == 1 && !typ.Variadic() {
+								implicits[obj] = true
+								break
+							}
+						}
+						return nil, fmt.Errorf("%s: %v is not a single-parameter function-typed variable", kw, obj)
 					default:
 						panic("unreachable")
 					}
@@ -333,7 +346,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 		}
 		examples = append(examples, example{pattern, subst})
 	}
-	applyEx(snap, args.targets, avoids, stricts, args.code, codePos, typesPkg, info, examples)
+	applyEx(snap, args.targets, avoids, stricts, implicits, args.code, codePos, typesPkg, info, examples)
 	return nil, nil
 }
 
@@ -363,7 +376,7 @@ func avoidOf(snap *refactor.Snapshot, avoids []types.Object, info *types.Info, s
 	return avoid
 }
 
-func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []types.Object, stricts map[types.Object]bool, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, examples []example) {
+func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []types.Object, stricts, implicits map[types.Object]bool, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, examples []example) {
 	m := &matcher{
 		fset:    snap.Fset(),
 		wildOK:  true,
@@ -404,6 +417,21 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 
 				for _, example := range examples {
 					pattern, subst := example.old, example.new
+
+					m.reset()
+
+					if call, ok := pattern.(*ast.CallExpr); ok {
+						if ident, ok := call.Fun.(*ast.Ident); ok {
+							if lval := info.Uses[ident]; implicits[lval] {
+								typ := assigneeType(stack, info)
+								if typ == nil || !m.identical(typ, lval.Type().(*types.Signature).Params().At(0).Type()) {
+									continue
+								}
+
+								pattern = call.Args[0]
+							}
+						}
+					}
 
 					if !m.match(pattern, stack[0]) {
 						continue
@@ -698,4 +726,138 @@ func commonRanges(x, y string) []rangePair {
 		}
 	}
 	return pairs
+}
+
+// assigneeType returns the type of the variable that stack[0] is
+// being assigned to. Assignment here includes the assignment implied
+// by passing arguments to a function call, return results,
+// initializing composite literals, and map indexing.
+//
+// If the variable at the top of the stack is not being assigned, then
+// assigneeType returns nil.
+func assigneeType(stack []ast.Node, info *types.Info) types.Type {
+	if len(stack) < 2 {
+		return nil
+	}
+
+	val := stack[0]
+	switch parent := stack[1].(type) {
+	case *ast.AssignStmt:
+		if len(parent.Lhs) != len(parent.Rhs) {
+			break
+		}
+		for i, rhs := range parent.Rhs {
+			if rhs == val {
+				return info.TypeOf(parent.Lhs[i])
+			}
+		}
+
+	case *ast.ValueSpec:
+		if len(parent.Names) != len(parent.Values) {
+			break
+		}
+		for i, rhs := range parent.Values {
+			if rhs == val {
+				return info.TypeOf(parent.Names[i])
+			}
+		}
+
+	case *ast.CallExpr:
+		if parent.Fun == val {
+			break
+		}
+
+		tv, ok := info.Types[parent.Fun]
+		if !ok {
+			panic(fmt.Sprintf("missing type info for %v", parent.Fun))
+		}
+
+		// Type conversion.
+		if tv.IsType() {
+			return tv.Type
+		}
+
+		// Function call.
+		sig := tv.Type.(*types.Signature)
+		params := sig.Params()
+		last := params.Len() - 1
+		for i, arg := range parent.Args {
+			if arg == val {
+				if sig.Variadic() && parent.Ellipsis == token.NoPos && i >= last {
+					return params.At(last).Type().(*types.Slice).Elem()
+				}
+				return params.At(i).Type()
+			}
+		}
+
+	case *ast.ReturnStmt:
+		var curfn ast.Expr
+	Outer:
+		for _, outer := range stack {
+			switch outer := outer.(type) {
+			case *ast.FuncDecl:
+				curfn = outer.Name
+				break Outer
+			case *ast.FuncLit:
+				curfn = outer
+				break Outer
+			}
+		}
+
+		sig := info.TypeOf(curfn).(*types.Signature)
+		for i, result := range parent.Results {
+			if result == val {
+				return sig.Results().At(i).Type()
+			}
+		}
+
+	case *ast.CompositeLit:
+		if parent.Type == val {
+			break
+		}
+		switch typ := info.TypeOf(parent.Type).Underlying().(type) {
+		case *types.Array:
+			return typ.Elem()
+		case *types.Slice:
+			return typ.Elem()
+		case *types.Struct:
+			for i, elt := range parent.Elts {
+				if elt == val {
+					return typ.Field(i).Type()
+				}
+			}
+
+		}
+
+	case *ast.KeyValueExpr:
+		outer := stack[2].(*ast.CompositeLit)
+		switch typ := info.TypeOf(outer.Type).Underlying().(type) {
+		case *types.Array:
+			if parent.Value == val {
+				return typ.Elem()
+			}
+		case *types.Slice:
+			if parent.Value == val {
+				return typ.Elem()
+			}
+		case *types.Map:
+			if parent.Key == val {
+				return typ.Key()
+			}
+			if parent.Value == val {
+				return typ.Elem()
+			}
+		case *types.Struct:
+			if parent.Value == val {
+				return info.Uses[parent.Key.(*ast.Ident)].(*types.Var).Type()
+			}
+		}
+
+	case *ast.IndexExpr:
+		if typ, ok := info.TypeOf(parent.X).Underlying().(*types.Map); ok && parent.Index == val {
+			return typ.Key()
+		}
+	}
+
+	return nil
 }

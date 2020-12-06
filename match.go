@@ -34,8 +34,7 @@ type matcher struct {
 	verbose bool
 }
 
-// match reports whether pattern x matches y.
-func (m *matcher) match(x, y ast.Node) bool {
+func (m *matcher) reset() {
 	if len(m.env) > 0 {
 		for k := range m.env {
 			delete(m.env, k)
@@ -46,6 +45,10 @@ func (m *matcher) match(x, y ast.Node) bool {
 			delete(m.envT, k)
 		}
 	}
+}
+
+// match reports whether pattern x matches y.
+func (m *matcher) match(x, y ast.Node) bool {
 	if x == nil && y == nil {
 		return true
 	}

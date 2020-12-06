@@ -1,0 +1,83 @@
+ex {
+  var toaux func(Aux)
+  var n Node
+  implicit toaux
+
+  toaux(n) -> OldNode{n}
+}
+-- x.go --
+package m
+
+type Aux interface{}
+
+type Node interface{ M() }
+type OldNode struct{ Node }
+
+var nodes []Node
+
+var _ interface{} = nodes[0]
+
+var _ Aux = nodes[0]
+var _, _ Aux = nodes[0], nodes[1]
+
+func f(Node, Aux, Node, ...Aux) int
+
+var _ = f(nodes[0], nodes[1], nodes[2], nodes[3], nodes[4], nodes[5])
+
+var n Node
+
+type Value struct { x int; aux Aux; avoid interface{} }
+
+var _ = Value{0, n, n}
+var _ = Value{aux: n, avoid: n}
+var _ = Value{avoid: n, aux: n}
+
+func _(v Value) (Aux, interface{}, Aux) {
+	v.aux, v.avoid, v.aux = n, n, n
+	return n, n, n
+}
+
+var _ = append([]Aux(nil), nil, n)
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -9,24 +9,28 @@
+
+ var _ interface{} = nodes[0]
+
+-var _ Aux = nodes[0]
+-var _, _ Aux = nodes[0], nodes[1]
++var _ Aux = OldNode{nodes[0]}
++var _, _ Aux = OldNode{nodes[0]}, OldNode{nodes[1]}
+
+ func f(Node, Aux, Node, ...Aux) int
+
+-var _ = f(nodes[0], nodes[1], nodes[2], nodes[3], nodes[4], nodes[5])
++var _ = f(nodes[0], OldNode{nodes[1]}, nodes[2], OldNode{nodes[3]}, OldNode{nodes[4]}, OldNode{nodes[5]})
+
+ var n Node
+
+-type Value struct { x int; aux Aux; avoid interface{} }
++type Value struct {
++	x     int
++	aux   Aux
++	avoid interface{}
++}
+
+-var _ = Value{0, n, n}
+-var _ = Value{aux: n, avoid: n}
+-var _ = Value{avoid: n, aux: n}
++var _ = Value{0, OldNode{n}, n}
++var _ = Value{aux: OldNode{n}, avoid: n}
++var _ = Value{avoid: n, aux: OldNode{n}}
+
+ func _(v Value) (Aux, interface{}, Aux) {
+-	v.aux, v.avoid, v.aux = n, n, n
+-	return n, n, n
++	v.aux, v.avoid, v.aux = OldNode{n}, n, OldNode{n}
++	return OldNode{n}, n, OldNode{n}
+ }
+
+-var _ = append([]Aux(nil), nil, n)
++var _ = append([]Aux(nil), OldNode{nil}, OldNode{n})

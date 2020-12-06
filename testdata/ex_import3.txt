@@ -1,0 +1,24 @@
+ex . ./sub { Zero -> 0 }
+-- x.go --
+package m
+
+const Zero = 0
+-- sub/sub.go --
+package sub
+
+import "m"
+import . "m"
+
+var _ = m.Zero + Zero
+-- stdout --
+diff old/sub/sub.go new/sub/sub.go
+--- old/sub/sub.go
++++ new/sub/sub.go
+@@ -1,6 +1,3 @@
+ package sub
+
+-import "m"
+-import . "m"
+-
+-var _ = m.Zero + Zero
++var _ = 0 + 0
