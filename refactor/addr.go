@@ -321,7 +321,13 @@ func addrToByteRange(addr string, start int, data []byte) (lo, hi int, err error
 
 		case '+', '-':
 			if prevc == '+' || prevc == '-' {
-				lo, hi, err = addrNumber(data, lo, hi, prevc, 1, charOffset)
+				n := 1
+				if prevc == '-' && c == '+' || prevc == '+' && c == '-' {
+					// Don't bother with an out-of-range error for a
+					// coordinate that's not going to be used.
+					n = 0
+				}
+				lo, hi, err = addrNumber(data, lo, hi, prevc, n, charOffset)
 			}
 			dir = c
 
@@ -353,6 +359,8 @@ func addrToByteRange(addr string, start int, data []byte) (lo, hi int, err error
 			prevc = c
 			addr = addr[i:]
 			continue
+
+		// TODO: case '?' for backward matches?
 
 		case '/':
 			var i, j int
@@ -394,7 +402,7 @@ func addrToByteRange(addr string, start int, data []byte) (lo, hi int, err error
 // (or characters) after hi.  Applying -n (or -#n) means to back up n lines
 // (or characters) before lo.
 // The return value is the new lo, hi.
-func addrNumber(data []byte, lo, hi int, dir byte, n int, charOffset bool) (int, int, error) {
+func addrNumber(data []byte, lo, hi int, dir byte, n int, charOffset bool) (newLo int, newHi int, err error) {
 	switch dir {
 	case 0:
 		lo = 0
@@ -457,7 +465,7 @@ func addrNumber(data []byte, lo, hi int, dir byte, n int, charOffset bool) (int,
 		if n == 0 {
 			return lo, hi, nil
 		}
-		for ; lo >= 0; lo-- {
+		for lo--; lo >= 0; lo-- {
 			if lo > 0 && data[lo-1] != '\n' {
 				continue
 			}

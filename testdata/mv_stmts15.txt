@@ -1,0 +1,36 @@
+mv F:/f.2/,/6/-2 G
+-- x.go --
+package p
+
+func F() {
+	f(1)
+	f(2)
+	f(3)
+	f(4)
+	f(5)
+	f(6)
+}
+
+func f(int) {}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,11 +2,15 @@
+
+ func F() {
+ 	f(1)
++	G()
++	f(5)
++	f(6)
++}
++
++func G() {
+ 	f(2)
+ 	f(3)
+ 	f(4)
+-	f(5)
+-	f(6)
+ }
+
+ func f(int) {}
