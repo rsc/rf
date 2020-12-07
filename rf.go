@@ -120,8 +120,11 @@ func run(rf *refactor.Refactor, script string) error {
 		lastCmd = x
 
 		targ := snap.Target()
+		if targ == nil {
+			return fmt.Errorf("missing target")
+		}
 		if targ.Types == nil {
-			panic("no types in target")
+			return fmt.Errorf("no types in target")
 		}
 
 		fn(snap, args)
