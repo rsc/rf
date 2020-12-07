@@ -132,10 +132,22 @@ func (s *Snapshot) LookupAt(name string, pos token.Pos) types.Object {
 }
 
 func Walk(n ast.Node, f func(stack []ast.Node)) {
-	WalkRange(n, 0, token.Pos(^uint(0)>>1), f)
+	walkRange(n, 0, token.Pos(^uint(0)>>1), true, f)
+}
+
+func WalkPost(n ast.Node, f func(stack []ast.Node)) {
+	walkRange(n, 0, token.Pos(^uint(0)>>1), false, f)
 }
 
 func WalkRange(n ast.Node, lo, hi token.Pos, f func(stack []ast.Node)) {
+	walkRange(n, lo, hi, true, f)
+}
+
+func WalkRangePost(n ast.Node, lo, hi token.Pos, f func(stack []ast.Node)) {
+	walkRange(n, lo, hi, false, f)
+}
+
+func walkRange(n ast.Node, lo, hi token.Pos, preorder bool, f func(stack []ast.Node)) {
 	var stack []ast.Node
 	var stackPos int
 
@@ -147,6 +159,9 @@ func WalkRange(n ast.Node, lo, hi token.Pos, f func(stack []ast.Node)) {
 
 	ast.Inspect(n, func(n ast.Node) bool {
 		if n == nil {
+			if !preorder {
+				f(stack[stackPos:])
+			}
 			stackPos++
 			return true
 		}
@@ -162,7 +177,9 @@ func WalkRange(n ast.Node, lo, hi token.Pos, f func(stack []ast.Node)) {
 		}
 		stackPos--
 		stack[stackPos] = n
-		f(stack[stackPos:])
+		if preorder {
+			f(stack[stackPos:])
+		}
 		return true
 	})
 

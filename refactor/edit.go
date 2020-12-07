@@ -71,10 +71,6 @@ func (x edits) Less(i, j int) bool {
 	if x[i].pos != x[j].pos {
 		return x[i].pos < x[j].pos
 	}
-	// Insert before delete/replace.
-	if (x[i].end == x[i].pos) != (x[j].end == x[j].pos) {
-		return x[i].end == x[i].pos
-	}
 	// Force delete before other delete/replace.
 	if x[i].force != x[j].force {
 		return x[i].force

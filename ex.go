@@ -397,7 +397,18 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 			if file.Syntax == nil {
 				continue
 			}
-			refactor.Walk(file.Syntax, func(stack []ast.Node) {
+
+			// Post-order traversal lets us rewrite children before parents,
+			// which means that the parent rewrite is wrapping the child node,
+			// its appending edits apply *after* any appending edits in the child.
+			// For example consider:
+			//	x -> fx()
+			//	y = x -> sety(x)
+			// The first rewrite appends "()", and the second ")".
+			// We want to end up with sety(fx()).
+			// Postorder places the inner rewrites appends before the outer one.
+			// This is not quite correct in general, but it works well.
+			refactor.WalkPost(file.Syntax, func(stack []ast.Node) {
 				// Do not match against the bare selector within a qualified identifier.
 				if len(stack) >= 2 {
 					if sel, ok := stack[1].(*ast.SelectorExpr); ok && sel.Sel == stack[0] {

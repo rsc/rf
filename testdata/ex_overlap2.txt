@@ -1,0 +1,68 @@
+ex {
+	var t *T
+	var x int
+	t.M = x -> t.SetM(x)
+	t.M -> t.GetM()
+
+	t.X -> t.GetX()
+	t.X = x -> t.SetX(x)
+
+	t.T -> t.GetT()
+}
+-- x.go --
+package p
+
+type T struct {M, X int; T *T}
+
+func (t *T) GetM() int { return t.M }
+func (t *T) SetM(x int) { t.M = x }
+
+func (t *T) GetX() int { return t.X }
+func (t *T) SetX(x int) { t.X = x }
+
+func (t *T) GetT() *T { return t.T }
+
+func _(t, u*T) {
+	t.M = u.M
+
+	t.X = u.X
+
+	t.X = t.T.T.M
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,19 +1,22 @@
+ package p
+
+-type T struct {M, X int; T *T}
++type T struct {
++	M, X int
++	T    *T
++}
+
+-func (t *T) GetM() int { return t.M }
+-func (t *T) SetM(x int) { t.M = x }
++func (t *T) GetM() int  { return t.M }
++func (t *T) SetM(x int) { t.SetM(x) }
+
+-func (t *T) GetX() int { return t.X }
+-func (t *T) SetX(x int) { t.X = x }
++func (t *T) GetX() int  { return t.GetX() }
++func (t *T) SetX(x int) { t.SetX(x) }
+
+-func (t *T) GetT() *T { return t.T }
++func (t *T) GetT() *T { return t.GetT() }
+
+-func _(t, u*T) {
+-	t.M = u.M
++func _(t, u *T) {
++	t.SetM(u.GetM())
+
+-	t.X = u.X
++	t.SetX(u.GetX())
+
+-	t.X = t.T.T.M
++	t.SetX(t.GetT().GetT().GetM())
+ }
