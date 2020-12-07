@@ -1,0 +1,32 @@
+ex {
+  var v *Value
+  v.Aux.(Node) -> v.Aux.(struct { Node "xxx" })
+  v.Aux.(struct { Node "yyy" }) -> v.Aux.(Node)
+}
+-- x.go --
+package m
+
+type Value struct{ Aux interface{} }
+
+type Node interface{ IsNode() }
+
+var v *Value
+
+var _ = v.Aux.(Node)
+
+var _ = v.Aux.(struct{ Node "yyy" })
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -6,6 +6,8 @@
+
+ var v *Value
+
+-var _ = v.Aux.(Node)
++var _ = v.Aux.(struct {
++	Node "xxx"
++})
+
+-var _ = v.Aux.(struct{ Node "yyy" })
++var _ = v.Aux.(Node)
