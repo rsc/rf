@@ -40,6 +40,9 @@ func _() {
 	var g G
 	g(n, n)
 }
+
+var _ = len("hi")
+var _ = len([]byte{1, 2, 3})
 -- stdout --
 diff old/x.go new/x.go
 --- old/x.go
@@ -61,7 +64,7 @@ diff old/x.go new/x.go
  func (state) val(interface{}, Aux)
  func (*state) ptr(Aux, interface{})
 
-@@ -13,22 +17,22 @@
+@@ -13,24 +17,24 @@
 
  func _() {
  	var n Node
@@ -92,3 +95,5 @@ diff old/x.go new/x.go
 -	g(n, n)
 +	g(OldNode{n}, n)
  }
+
+ var _ = len("hi")

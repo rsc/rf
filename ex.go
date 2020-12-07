@@ -788,6 +788,11 @@ func assigneeType(stack []ast.Node, info *types.Info) types.Type {
 			return tv.Type
 		}
 
+		// go/types doesn't assign an inferred signature for all builtins (e.g., len).
+		if tv.IsBuiltin() && tv.Type == types.Typ[types.Invalid] {
+			return nil
+		}
+
 		// Function call.
 		sig := tv.Type.Underlying().(*types.Signature)
 		params := sig.Params()
@@ -804,7 +809,7 @@ func assigneeType(stack []ast.Node, info *types.Info) types.Type {
 	case *ast.ReturnStmt:
 		var curfn ast.Expr
 	Outer:
-		for _, outer := range stack {
+		for _, outer := range stack[2:] {
 			switch outer := outer.(type) {
 			case *ast.FuncDecl:
 				curfn = outer.Name
@@ -826,7 +831,7 @@ func assigneeType(stack []ast.Node, info *types.Info) types.Type {
 		if parent.Type == val {
 			break
 		}
-		switch typ := info.TypeOf(parent.Type).Underlying().(type) {
+		switch typ := info.TypeOf(parent).Underlying().(type) {
 		case *types.Array:
 			return typ.Elem()
 		case *types.Slice:
@@ -842,7 +847,7 @@ func assigneeType(stack []ast.Node, info *types.Info) types.Type {
 
 	case *ast.KeyValueExpr:
 		outer := stack[2].(*ast.CompositeLit)
-		switch typ := info.TypeOf(outer.Type).Underlying().(type) {
+		switch typ := info.TypeOf(outer).Underlying().(type) {
 		case *types.Array:
 			if parent.Value == val {
 				return typ.Elem()

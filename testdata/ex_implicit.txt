@@ -1,7 +1,9 @@
 ex {
   var toaux func(Aux)
-  var n Node
   implicit toaux
+
+  var n Node
+  strict n
 
   toaux(n) -> OldNode{n}
 }
@@ -16,6 +18,7 @@ type OldNode struct{ Node }
 var nodes []Node
 
 var _ interface{} = nodes[0]
+var _ Aux = nil
 
 var _ Aux = nodes[0]
 var _, _ Aux = nodes[0], nodes[1]
@@ -38,13 +41,17 @@ func _(v Value) (Aux, interface{}, Aux) {
 }
 
 var _ = append([]Aux(nil), nil, n)
+
+var _ = [][10]Aux{{n}, {4: n}}
+
+func _() func() { return func() {} }
 -- stdout --
 diff old/x.go new/x.go
 --- old/x.go
 +++ new/x.go
-@@ -9,24 +9,28 @@
-
+@@ -10,28 +10,32 @@
  var _ interface{} = nodes[0]
+ var _ Aux = nil
 
 -var _ Aux = nodes[0]
 -var _, _ Aux = nodes[0], nodes[1]
@@ -80,4 +87,9 @@ diff old/x.go new/x.go
  }
 
 -var _ = append([]Aux(nil), nil, n)
-+var _ = append([]Aux(nil), OldNode{nil}, OldNode{n})
++var _ = append([]Aux(nil), nil, OldNode{n})
+
+-var _ = [][10]Aux{{n}, {4: n}}
++var _ = [][10]Aux{{OldNode{n}}, {4: OldNode{n}}}
+
+ func _() func() { return func() {} }
