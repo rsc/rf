@@ -1,0 +1,48 @@
+ex . ./sub {
+  var toaux func(Aux)
+  implicit toaux
+
+  var n Node
+  strict n
+
+  toaux(n) -> OldNode{n}
+}
+-- x.go --
+package m
+
+type Aux interface{}
+
+type Node interface{ M() }
+type OldNode struct{ Node }
+
+-- sub/sub.go --
+package sub
+
+import "m"
+
+var n m.Node
+
+var a m.Aux = n
+
+func nonexport(m.Aux) int
+
+func unrelated(int) int
+
+var _ = nonexport(n) + unrelated(42)
+-- stdout --
+diff old/sub/sub.go new/sub/sub.go
+--- old/sub/sub.go
++++ new/sub/sub.go
+@@ -4,10 +4,10 @@
+
+ var n m.Node
+
+-var a m.Aux = n
++var a m.Aux = m.OldNode{n}
+
+ func nonexport(m.Aux) int
+
+ func unrelated(int) int
+
+-var _ = nonexport(n) + unrelated(42)
++var _ = nonexport(m.OldNode{n}) + unrelated(42)

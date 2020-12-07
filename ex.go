@@ -434,7 +434,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 					if call, ok := pattern.(*ast.CallExpr); ok {
 						if ident, ok := call.Fun.(*ast.Ident); ok {
 							if lval := info.Uses[ident]; implicits[lval] {
-								typ := assigneeType(stack, info)
+								typ := assigneeType(stack, target.TypesInfo)
 								if typ == nil || !m.identical(typ, lval.Type().(*types.Signature).Params().At(0).Type()) {
 									continue
 								}
