@@ -557,9 +557,12 @@ func (m *matcher) implements(V types.Type, T *types.Interface) bool {
 					return false
 				}
 				j++
+				if j == T.NumMethods() {
+					return true
+				}
 			}
 		}
-		return j == T.NumMethods()
+		return false
 	}
 
 	// A concrete type V implements T if it implements all methods of T.
