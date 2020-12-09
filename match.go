@@ -385,9 +385,6 @@ func (m *matcher) assignableTo(V, T types.Type) bool {
 	// to avoid multiple calls to identical, as we'd then need
 	// to handle saving and restoring the environment to avoid
 	// partial failed matches from preventing later full matches.
-	//
-	// TODO(mdempsky): Double check that this is correct,
-	// and consider upstreaming the changes to go/types.
 
 	Vu := V.Underlying()
 	Tu := T.Underlying()
