@@ -1,0 +1,49 @@
+ex {
+  var m intMap
+  var k, v int
+
+  avoid intMap.Get
+  avoid intMap.Get2
+  avoid intMap.Set
+
+  m[k]     -> m.Get(k)
+  m[k]     -> m.Get2(k)
+  m[k] = v -> m.Set(k, v)
+}
+-- x.go --
+package m
+
+type intMap map[int]int
+
+func (m intMap) Get(k int) int                 { return m[k] }
+func (m intMap) Get2(k int) (res int, ok bool) { res, ok = m[k]; return }
+func (m intMap) Set(k, v int) int              { return m[k] }
+
+func _(m intMap) {
+	m[1] = 1
+
+	_ = m[0]
+
+	a, b := m[2]
+
+	_, _ = a, b
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -7,11 +7,11 @@
+ func (m intMap) Set(k, v int) int              { return m[k] }
+
+ func _(m intMap) {
+-	m[1] = 1
++	m.Set(1, 1)
+
+-	_ = m[0]
++	_ = m.Get(0)
+
+-	a, b := m[2]
++	a, b := m.Get2(2)
+
+ 	_, _ = a, b
+ }

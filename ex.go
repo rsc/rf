@@ -454,6 +454,10 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 						return
 					}
 
+					if !contextAppropriate(subst, info, stack, target.TypesInfo) {
+						continue
+					}
+
 					// Do not apply substitution in its own definition.
 					if avoid == nil {
 						avoid = avoidOf(snap, avoids, info, subst)
@@ -461,24 +465,6 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 					for _, n := range stack {
 						if avoid[n] {
 							return
-						}
-					}
-
-					// Do not substitute a function call
-					// on LHS of assignment, or as argument to unary &.
-					// TODO: Generalize.
-					if _, isCall := subst.(*ast.CallExpr); isCall {
-						if as, ok := stack[1].(*ast.AssignStmt); ok {
-							for _, l := range as.Lhs {
-								if l == stack[0] {
-									return
-								}
-							}
-						}
-						if addr, ok := stack[1].(*ast.UnaryExpr); ok && false {
-							if addr.Op == token.AND && addr.X == stack[0] {
-								return
-							}
 						}
 					}
 
@@ -876,4 +862,60 @@ func assigneeType(stack []ast.Node, info *types.Info) types.Type {
 	}
 
 	return nil
+}
+
+func contextAppropriate(subst ast.Node, substInfo *types.Info, stack []ast.Node, stackInfo *types.Info) bool {
+	if len(stack) < 2 {
+		return true // is anything ever appropriate here?
+	}
+
+	// TODO: More cases.
+
+	expr, ok := subst.(ast.Expr)
+	if !ok {
+		return true
+	}
+	tv := substInfo.Types[expr]
+
+	switch parent := stack[1].(type) {
+	case *ast.AssignStmt:
+		// Don't substitution non-assignable expression on LHS
+		// of assignment.
+		for _, l := range parent.Lhs {
+			if l == stack[0] {
+				if !tv.Assignable() {
+					return false
+				}
+				break
+			}
+		}
+
+		// Don't substitute RHS of assignment if it isn't
+		// appropriate for LHS.
+		if len(parent.Rhs) == 1 && parent.Rhs[0] == stack[0] {
+			want := len(parent.Lhs)
+			if tup, ok := tv.Type.(*types.Tuple); ok {
+				if tup.Len() != want {
+					// multi-value function result
+					// doesn't match LHS arity
+					return false
+				}
+			} else if want == 2 && tv.HasOk() {
+				// ok
+			} else if want > 1 {
+				// single-value expression assigned to
+				// multiple variables
+				return false
+			}
+		}
+
+	case *ast.UnaryExpr:
+		// Don't substitution non-addressable expression as
+		// operand of unary &.
+		if parent.Op == token.AND && !tv.Addressable() {
+			return false
+		}
+	}
+
+	return true
 }
