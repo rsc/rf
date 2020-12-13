@@ -21,14 +21,13 @@ import (
 // exArgs holds the result of parsing an ex command invocation.
 type exArgs struct {
 	snap       *refactor.Snapshot
+	patternPkg *refactor.Package
 	targets    []*refactor.Package
 	avoids     []types.Object
 	stricts    map[types.Object]bool
 	implicits  map[types.Object]bool
 	code       string
 	codePos    token.Pos
-	typesPkg   *types.Package
-	info       *types.Info
 	rewrites   []example
 	typeAssert bool // command is typeassert not ex
 }
@@ -90,7 +89,9 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 		return nil, nil
 	}
 	before := strings.TrimSpace(text[:i])
-	targets := []*refactor.Package{snap.Target()}
+
+	patternPkg := snap.Target()
+	targets := []*refactor.Package{patternPkg}
 	if before != "" {
 		targets = nil
 		items, _ := snap.EvalList(before)
@@ -126,11 +127,7 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 	}
 
 	var buf bytes.Buffer
-	if true || len(targets) == 1 {
-		fmt.Fprintf(&buf, "package %s\n", targets[0].Types.Name())
-	} else {
-		fmt.Fprintf(&buf, "package ex\n")
-	}
+	fmt.Fprintf(&buf, "package %s\n", patternPkg.Name)
 	importOK := true
 	body := func() {
 		if importOK {
@@ -254,6 +251,7 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 
 	ex := &exArgs{
 		snap:       snap,
+		patternPkg: patternPkg,
 		targets:    targets,
 		code:       buf.String(),
 		typeAssert: isTypeAssert,
@@ -302,25 +300,7 @@ func (ex *exArgs) check() error {
 		}),
 	}
 
-	var typesPkg *types.Package
-	var info *types.Info
-	if true || len(ex.targets) == 1 {
-		p := ex.targets[0]
-		typesPkg = p.Types
-		info = p.TypesInfo
-	} else {
-		typesPkg = types.NewPackage("ex", "ex")
-		info = &types.Info{
-			Types:      make(map[ast.Expr]types.TypeAndValue),
-			Defs:       make(map[*ast.Ident]types.Object),
-			Uses:       make(map[*ast.Ident]types.Object),
-			Selections: make(map[*ast.SelectorExpr]*types.Selection),
-			Scopes:     make(map[ast.Node]*types.Scope),
-			Implicits:  make(map[ast.Node]types.Object),
-		}
-	}
-
-	check := types.NewChecker(conf, snap.Fset(), typesPkg, info)
+	check := types.NewChecker(conf, snap.Fset(), ex.patternPkg.Types, ex.patternPkg.TypesInfo)
 	err = check.Files([]*ast.File{f})
 	_ = err // already handled in conf.Error
 	if errors != 0 {
@@ -333,6 +313,7 @@ func (ex *exArgs) check() error {
 
 	body := f.Decls[len(f.Decls)-1].(*ast.FuncDecl).Body.List
 
+	info := ex.patternPkg.TypesInfo
 	var rewrites []example
 	for _, stmt := range body {
 		if stmt, ok := stmt.(*ast.ExprStmt); ok {
@@ -416,8 +397,6 @@ func (ex *exArgs) check() error {
 	ex.stricts = stricts
 	ex.implicits = implicits
 	ex.codePos = codePos
-	ex.typesPkg = typesPkg
-	ex.info = info
 	ex.rewrites = rewrites
 	return nil
 }
@@ -458,8 +437,8 @@ func (ex *exArgs) run() {
 		fset:    ex.snap.Fset(),
 		wildOK:  true, // TODO(rsc): remove
 		wildPos: ex.codePos,
-		pkgX:    ex.typesPkg,
-		infoX:   ex.info,
+		pkgX:    ex.patternPkg.Types,
+		infoX:   ex.patternPkg.TypesInfo,
 		env:     make(map[types.Object]ast.Expr),
 		envT:    make(map[string]types.Type),
 		stricts: ex.stricts,
@@ -511,7 +490,7 @@ func (ex *exArgs) run() {
 
 					if call, ok := pattern.(*ast.CallExpr); ok {
 						if ident, ok := call.Fun.(*ast.Ident); ok {
-							if lval := ex.info.Uses[ident]; ex.implicits[lval] {
+							if lval := ex.patternPkg.TypesInfo.Uses[ident]; ex.implicits[lval] {
 								typ := assigneeType(stack, target.TypesInfo)
 								if typ == nil || !m.identical(typ, lval.Type().(*types.Signature).Params().At(0).Type()) {
 									continue
@@ -532,7 +511,7 @@ func (ex *exArgs) run() {
 						return
 					}
 
-					if !contextAppropriate(subst, ex.info, stack, target.TypesInfo) {
+					if !contextAppropriate(subst, ex.patternPkg.TypesInfo, stack, target.TypesInfo) {
 						continue
 					}
 
@@ -544,7 +523,7 @@ func (ex *exArgs) run() {
 					// but we'd run into the post-order traversal bug again too.
 					// More thought is needed.
 					if avoid == nil {
-						avoid = avoidOf(ex.snap, ex.avoids, ex.info, subst)
+						avoid = avoidOf(ex.snap, ex.avoids, ex.patternPkg.TypesInfo, subst)
 					}
 					for _, n := range stack {
 						if avoid[n] {
@@ -601,7 +580,9 @@ func (m *matcher) applySubst(subst ast.Node, matchPos token.Pos) string {
 			switch xobj := xobj.(type) {
 			case *types.Var:
 				replx := m.env[xobj]
-				// TODO: captured subexpression may need import fixes?
+				// The captured subexpression does not need import fixes,
+				// because it is coming from the original source file (where it is staying).
+				// It can be substituted directly, possibly with parens.
 				repl = string(m.snap.Text(replx.Pos(), replx.End()))
 				if needParen(replx, stack) {
 					repl = "(" + repl + ")"
@@ -624,33 +605,41 @@ func (m *matcher) applySubst(subst ast.Node, matchPos token.Pos) string {
 
 		// If this ID is p.ID where p is a package,
 		// make sure we have the import available,
-		// or if this is package p, remove the p.
+		// or if we are inserting into package p, remove the p.
 		if len(stack) >= 2 {
-			if sel, ok := stack[1].(*ast.SelectorExpr); ok {
+			if sel, ok := stack[1].(*ast.SelectorExpr); ok && sel.X == stack[0] {
 				if xid, ok := sel.X.(*ast.Ident); ok {
 					if pid, ok := m.infoX.Uses[xid].(*types.PkgName); ok {
-						m.snap.NeedImport(matchPos, xid.Name, pid.Imported())
+						if pid.Imported() == m.target.Types {
+							sobj := m.infoX.Uses[sel.Sel]
+							xobj := m.snap.LookupAt(sel.Sel.Name, matchPos)
+							if xobj != sobj {
+								m.snap.ErrorAt(matchPos, "%s is shadowed in replacement - %v", sel.Sel.Name, xobj)
+							}
+							buf.Delete(sel.Pos(), sel.Sel.Pos())
+						} else {
+							name := m.snap.NeedImport(matchPos, "", pid.Imported())
+							buf.Replace(sel.Pos(), sel.Sel.Pos(), name+".")
+						}
 					}
 				}
 				return
 			}
 		}
 
-		// Is this ID referring to a global in the typesPkg? If so:
-		// - Is the typesPkg the target package? Then make sure the global isn't shadowed.
+		// Is this ID referring to a global in the original package? If so:
+		// - Is the original package the target package?
+		//   Then make sure the global isn't shadowed.
 		// - Otherwise, make sure the target has an import, and qualify the identifier.
 		obj := m.infoX.Uses[id]
-		if obj == nil {
-			panic("NO USES")
-		}
-		if obj != nil && m.pkgX != nil && obj.Parent() == m.pkgX.Scope() {
+		if m.pkgX != nil && obj.Parent() == m.pkgX.Scope() {
 			if m.pkgX == m.target.Types {
 				if xobj := m.snap.LookupAt(id.Name, matchPos); xobj != obj {
 					m.snap.ErrorAt(matchPos, "%s is shadowed in replacement - %v", id.Name, xobj)
 				}
 			} else {
-				m.snap.NeedImport(matchPos, m.pkgX.Name(), m.pkgX)
-				buf.Insert(id.Pos(), m.pkgX.Name()+".")
+				name := m.snap.NeedImport(matchPos, m.pkgX.Name(), m.pkgX)
+				buf.Insert(id.Pos(), name+".")
 			}
 		}
 	})
@@ -1016,15 +1005,15 @@ func (ex *exArgs) runTypeAssert() {
 		fset:    snap.Fset(),
 		wildOK:  true,
 		wildPos: ex.codePos,
-		pkgX:    ex.typesPkg,
-		infoX:   ex.info,
+		pkgX:    ex.patternPkg.Types,
+		infoX:   ex.patternPkg.TypesInfo,
 		env:     make(map[types.Object]ast.Expr),
 		envT:    make(map[string]types.Type),
 	}
 
 	// TODO(rsc): This is almost as wrong as the other avoidOf call.
 	// See comment above.
-	avoid := avoidOf(snap, ex.avoids, ex.info, nil)
+	avoid := avoidOf(snap, ex.avoids, ex.patternPkg.TypesInfo, nil)
 
 	done := make(map[types.Object][]span)
 

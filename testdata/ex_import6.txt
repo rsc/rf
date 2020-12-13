@@ -1,0 +1,32 @@
+ex . ./q {
+	import "m/q"
+	var t q.T
+	t.M() -> t.(M)
+}
+-- x.go --
+package p
+
+type M int
+
+func (m M) M() int { return int(m) }
+-- q/q.go --
+package q
+
+type T interface{ M() int }
+
+var tt T
+var _ = tt.M()
+-- stdout --
+diff old/q/q.go new/q/q.go
+--- old/q/q.go
++++ new/q/q.go
+@@ -1,6 +1,8 @@
+ package q
+
++import "m"
++
+ type T interface{ M() int }
+
+ var tt T
+-var _ = tt.M()
++var _ = tt.(p.M)
