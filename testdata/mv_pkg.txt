@@ -8,7 +8,9 @@ func X() int {
 	return q.Q + Y
 }
 
-var _ = X()
+func Z() int {
+	return q.Q
+}
 -- y.go --
 package p
 
@@ -20,6 +22,6 @@ var Q int
 -- stderr --
 mv ... m/q: import cycle: m -> m/q -> m
 	# m
-	p._ -> q.X
+	p.Z -> q.Q
 	# m/q
 	q.X -> p.Y

@@ -97,6 +97,35 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 		moves[obj] = dst
 	}
 
+	remap := make(map[refactor.QualName]refactor.QualName)
+	for obj, dst := range moves {
+		path := obj.Pkg().Path()
+		var src *refactor.Package
+		for _, pp := range snap.Packages() {
+			if pp.PkgPath == path {
+				src = pp
+			}
+		}
+		if src == nil {
+			panic("LOST SRC: " + path)
+		}
+		name := obj.Name()
+		if f, ok := obj.(*types.Func); ok && f.Type().(*types.Signature).Recv() != nil {
+			typ := f.Type().(*types.Signature).Recv().Type()
+			if ptr, ok := typ.(*types.Pointer); ok {
+				typ = ptr.Elem()
+			}
+			name = typ.(*types.Named).Obj().Name() + "." + name
+		}
+		remap[refactor.QualName{src, name}] = refactor.QualName{dst, name}
+	}
+	g := snap.DepsGraph(refactor.SymRefs).Map(remap)
+
+	if err := snap.CheckImportCycle(g); err != nil {
+		snap.ErrorAt(token.NoPos, "mv ... %s: %v", dstPkg.PkgPath, err)
+		return
+	}
+
 	done := make(map[types.Object]bool)
 	for _, src := range srcs {
 		if inFiles[src.Obj] != nil || done[src.Obj] {
@@ -164,9 +193,6 @@ func recordFileMoves(srcPkg *refactor.Package, file *ast.File, dstPkg *refactor.
 				}
 			}
 		case *ast.FuncDecl:
-			if d.Recv != nil {
-				continue
-			}
 			obj := srcPkg.TypesInfo.Defs[d.Name]
 			if obj == nil {
 				panic("no obj for func")

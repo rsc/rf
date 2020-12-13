@@ -166,7 +166,7 @@ func walkRange(n ast.Node, lo, hi token.Pos, preorder bool, f func(stack []ast.N
 	var stack []ast.Node
 	var stackPos int
 
-	if n == (*ast.File)(nil) {
+	if n == nil || n == (*ast.File)(nil) || n == (*ast.BlockStmt)(nil) {
 		// Happens for deleted files, where f.Syntax == nil.
 		// Easier to catch here than fix every call site.
 		return
