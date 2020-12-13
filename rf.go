@@ -47,13 +47,14 @@ func main() {
 }
 
 var cmds = map[string]func(*refactor.Snapshot, string){
-	"add":    cmdAdd,
-	"debug":  cmdDebug,
-	"inline": cmdInline,
-	"key":    cmdKey,
-	"ex":     cmdEx,
-	"mv":     cmdMv,
-	"rm":     cmdRm,
+	"add":        cmdAdd,
+	"debug":      cmdDebug,
+	"inline":     cmdInline,
+	"key":        cmdKey,
+	"ex":         cmdEx,
+	"mv":         cmdMv,
+	"rm":         cmdRm,
+	"typeassert": cmdTypeAssert,
 }
 
 type loader interface {

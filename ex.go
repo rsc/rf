@@ -20,8 +20,17 @@ import (
 
 // exArgs holds the result of parsing an ex command invocation.
 type exArgs struct {
-	targets []*refactor.Package
-	code    string
+	snap       *refactor.Snapshot
+	targets    []*refactor.Package
+	avoids     []types.Object
+	stricts    map[types.Object]bool
+	implicits  map[types.Object]bool
+	code       string
+	codePos    token.Pos
+	typesPkg   *types.Package
+	info       *types.Info
+	rewrites   []example
+	typeAssert bool // command is typeassert not ex
 }
 
 type example struct {
@@ -30,21 +39,37 @@ type example struct {
 }
 
 func cmdEx(snap *refactor.Snapshot, text string) {
-	args, err := parseEx(snap, text)
+	ex, err := parseEx(snap, text, false)
 	if err != nil {
 		snap.ErrorAt(token.NoPos, "ex: %v", err)
 		return
 	}
-	if args == nil {
+	if ex == nil {
 		// Trust that parseEx printed an error.
 		return
 	}
-
-	if _, err := checkEx(snap, args); err != nil {
+	if err := ex.check(); err != nil {
 		snap.ErrorAt(token.NoPos, "ex: %v", err)
 		return
 	}
-	return
+	ex.run()
+}
+
+func cmdTypeAssert(snap *refactor.Snapshot, text string) {
+	ex, err := parseEx(snap, text, true)
+	if err != nil {
+		snap.ErrorAt(token.NoPos, "ex: %v", err)
+		return
+	}
+	if ex == nil {
+		// Trust that parseEx printed an error.
+		return
+	}
+	if err := ex.check(); err != nil {
+		snap.ErrorAt(token.NoPos, "ex: %v", err)
+		return
+	}
+	ex.runTypeAssert()
 }
 
 func cutGo(text, sep string) (before, after string, ok bool, err error) {
@@ -52,17 +77,17 @@ func cutGo(text, sep string) (before, after string, ok bool, err error) {
 	return before, after, ok, nil
 }
 
-func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
+func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, error) {
 	fset := token.NewFileSet()
 	text = strings.TrimSpace(text)
 	if text == "" {
 		snap.ErrorAt(token.NoPos, "ex: missing block")
-		return
+		return nil, nil
 	}
 	i := strings.Index(text, "{")
 	if i < 0 || text[len(text)-1] != '}' {
 		snap.ErrorAt(token.NoPos, "ex: malformed block - missing { }")
-		return
+		return nil, nil
 	}
 	before := strings.TrimSpace(text[:i])
 	targets := []*refactor.Package{snap.Target()}
@@ -91,13 +116,13 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 			ok = false
 		}
 		if !ok {
-			return
+			return nil, nil
 		}
 	}
 	text = strings.TrimSpace(text[i+1 : len(text)-1])
 	if text == "" {
 		snap.ErrorAt(token.NoPos, "ex: empty block")
-		return
+		return nil, nil
 	}
 
 	var buf bytes.Buffer
@@ -193,15 +218,31 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 					return nil, fmt.Errorf("parsing %s: %v", stmt, err)
 				}
 			}
-			fmt.Fprintf(&buf, "{\n{%s}\n", before)
+			fmt.Fprintf(&buf, "{\n")
+			fmt.Fprintf(&buf, "{\n%s /* -> %s */\n}\n", before, after)
 			if after != "!" {
-				if _, err := parser.ParseExpr("func() {" + after + "}"); err != nil {
+				fn, err := parser.ParseExpr("func() {" + after + "}")
+				if err != nil && !isTypeAssert {
 					after = "type _ " + after
 					if _, err := parser.ParseExpr("func() { " + after + "}"); err != nil {
 						return nil, fmt.Errorf("parsing %s: %v", stmt, err)
 					}
 				}
-				fmt.Fprintf(&buf, "{%s}\n", after)
+				if isTypeAssert {
+					foundAssert := false
+					s := fn.(*ast.FuncLit).Body.List[0]
+					if s, ok := s.(*ast.ExprStmt); ok {
+						if ta, ok := s.X.(*ast.TypeAssertExpr); ok {
+							if _, ok := ta.X.(*ast.Ident); ok {
+								foundAssert = true
+							}
+						}
+					}
+					if !foundAssert {
+						return nil, fmt.Errorf("parsing %s: arrow must be followed by name.(T)", stmt)
+					}
+				}
+				fmt.Fprintf(&buf, "{\n/* %s -> */ %s\n}\n", before, after)
 			}
 			fmt.Fprintf(&buf, "}\n")
 		}
@@ -211,14 +252,22 @@ func parseEx(snap *refactor.Snapshot, text string) (args *exArgs, err error) {
 	}
 	fmt.Fprintf(&buf, "}\n")
 
-	return &exArgs{targets: targets, code: buf.String()}, nil
+	ex := &exArgs{
+		snap:       snap,
+		targets:    targets,
+		code:       buf.String(),
+		typeAssert: isTypeAssert,
+	}
+	return ex, nil
 }
 
-func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
+func (ex *exArgs) check() error {
+	snap := ex.snap
 	codePos := token.Pos(snap.Fset().Base())
-	f, err := parser.ParseFile(snap.Fset(), "ex.go", args.code, 0)
+	var codeLines []string
+	f, err := parser.ParseFile(snap.Fset(), "ex.go", ex.code, 0)
 	if err != nil {
-		return nil, fmt.Errorf("internal error: %v\ncode:\n%s", err, args.code)
+		return fmt.Errorf("internal error: %v\ncode:\n%s", err, ex.code)
 	}
 
 	var errors int
@@ -231,6 +280,16 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 				return
 			}
 			errors++
+			if err, ok := err.(types.Error); ok {
+				if codeLines == nil {
+					codeLines = strings.Split(ex.code, "\n")
+				}
+				posn := snap.Fset().Position(err.Pos)
+				if posn.Filename == "ex.go" && posn.Line >= 1 && posn.Line < len(codeLines) {
+					snap.ErrorAt(token.NoPos, "ex: %s\n%s", err.Msg, codeLines[posn.Line-1])
+					return
+				}
+			}
 			snap.ErrorAt(token.NoPos, "%v", err)
 		},
 		Importer: importerFunc(func(pkg string) (*types.Package, error) {
@@ -245,8 +304,8 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 
 	var typesPkg *types.Package
 	var info *types.Info
-	if true || len(args.targets) == 1 {
-		p := args.targets[0]
+	if true || len(ex.targets) == 1 {
+		p := ex.targets[0]
 		typesPkg = p.Types
 		info = p.TypesInfo
 	} else {
@@ -265,7 +324,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 	err = check.Files([]*ast.File{f})
 	_ = err // already handled in conf.Error
 	if errors != 0 {
-		return nil, fmt.Errorf("errors in example:\n%s", args.code)
+		return fmt.Errorf("errors in example")
 	}
 
 	var avoids []types.Object
@@ -274,7 +333,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 
 	body := f.Decls[len(f.Decls)-1].(*ast.FuncDecl).Body.List
 
-	var examples []example
+	var rewrites []example
 	for _, stmt := range body {
 		if stmt, ok := stmt.(*ast.ExprStmt); ok {
 			if pragma, ok := stmt.X.(*ast.CallExpr); ok {
@@ -285,7 +344,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 					var obj types.Object
 					switch n := n.(type) {
 					default:
-						return nil, fmt.Errorf("cannot %s %T", kw, n)
+						return fmt.Errorf("cannot %s %T", kw, n)
 
 					case *ast.Ident:
 						obj = info.Uses[n]
@@ -297,7 +356,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 						}
 					}
 					if obj == nil {
-						return nil, fmt.Errorf("cannot find %s %v", kw, astString(snap.Fset(), n))
+						return fmt.Errorf("cannot find %s %v", kw, astString(snap.Fset(), n))
 					}
 					switch kw {
 					case "avoid":
@@ -307,7 +366,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 							stricts[obj] = true
 							break
 						}
-						return nil, fmt.Errorf("%s: %v is not a pattern variable", kw, obj)
+						return fmt.Errorf("%s: %v is not a pattern variable", kw, obj)
 					case "implicit":
 						// TODO(mdempsky): Support multi-valued expressions?
 						if obj, ok := obj.(*types.Var); ok && obj.Pos() >= codePos {
@@ -316,7 +375,7 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 								break
 							}
 						}
-						return nil, fmt.Errorf("%s: %v is not a single-parameter function-typed variable", kw, obj)
+						return fmt.Errorf("%s: %v is not a single-parameter function-typed variable", kw, obj)
 					default:
 						panic("unreachable")
 					}
@@ -344,13 +403,26 @@ func checkEx(snap *refactor.Snapshot, args *exArgs) ([]example, error) {
 				subst = x.Decl.(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type
 			}
 		}
-		examples = append(examples, example{pattern, subst})
+		if ex.typeAssert {
+			x, ok := pattern.(*ast.BinaryExpr)
+			if !ok || x.Op != token.EQL {
+				return fmt.Errorf("invalid typeassert condition (must be ==): %v", astString(snap.Fset(), pattern))
+			}
+		}
+		rewrites = append(rewrites, example{pattern, subst})
 	}
-	applyEx(snap, args.targets, avoids, stricts, implicits, args.code, codePos, typesPkg, info, examples)
-	return nil, nil
+
+	ex.avoids = avoids
+	ex.stricts = stricts
+	ex.implicits = implicits
+	ex.codePos = codePos
+	ex.typesPkg = typesPkg
+	ex.info = info
+	ex.rewrites = rewrites
+	return nil
 }
 
-func avoidOf(snap *refactor.Snapshot, avoids []types.Object, info *types.Info, subst ast.Node) map[ast.Node]bool {
+func avoidOf(snap *refactor.Snapshot, avoids []types.Object, substInfo *types.Info, subst ast.Node) map[ast.Node]bool {
 	avoid := make(map[ast.Node]bool)
 	avoidObj := func(obj types.Object) {
 		stack := snap.SyntaxAt(obj.Pos())
@@ -364,33 +436,39 @@ func avoidOf(snap *refactor.Snapshot, avoids []types.Object, info *types.Info, s
 	for _, obj := range avoids {
 		avoidObj(obj)
 	}
-	refactor.Walk(subst, func(stack []ast.Node) {
-		id, ok := stack[0].(*ast.Ident)
-		if !ok {
-			return
-		}
-		if obj := info.Uses[id]; obj != nil && obj.Parent() != types.Universe {
-			avoidObj(obj)
-		}
-	})
+	if subst != nil {
+		refactor.Walk(subst, func(stack []ast.Node) {
+			id, ok := stack[0].(*ast.Ident)
+			if !ok {
+				return
+			}
+			if obj := substInfo.Uses[id]; obj != nil && obj.Parent() != types.Universe {
+				avoidObj(obj)
+			}
+		})
+	}
 	return avoid
 }
 
-func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []types.Object, stricts, implicits map[types.Object]bool, code string, codePos token.Pos, typesPkg *types.Package, info *types.Info, examples []example) {
+func (ex *exArgs) run() {
 	m := &matcher{
-		fset:    snap.Fset(),
-		wildOK:  true,
-		wildPos: codePos,
-		pkgX:    typesPkg,
-		infoX:   info,
-		env:     make(map[string]ast.Expr),
+		snap:    ex.snap,
+		code:    ex.code,
+		codePos: ex.codePos,
+		fset:    ex.snap.Fset(),
+		wildOK:  true, // TODO(rsc): remove
+		wildPos: ex.codePos,
+		pkgX:    ex.typesPkg,
+		infoX:   ex.info,
+		env:     make(map[types.Object]ast.Expr),
 		envT:    make(map[string]types.Type),
-		stricts: stricts,
+		stricts: ex.stricts,
 	}
 
 	var avoid map[ast.Node]bool
 
-	for _, target := range targets {
+	for _, target := range ex.targets {
+		m.target = target
 		m.pkgY = target.Types
 		m.infoY = target.TypesInfo
 		for _, file := range target.Files {
@@ -413,7 +491,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 				if len(stack) >= 2 {
 					if sel, ok := stack[1].(*ast.SelectorExpr); ok && sel.Sel == stack[0] {
 						if x, ok := sel.X.(*ast.Ident); ok {
-							if _, ok := info.Uses[x].(*types.PkgName); ok {
+							if _, ok := m.infoY.Uses[x].(*types.PkgName); ok {
 								return
 							}
 						}
@@ -426,14 +504,14 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 					return
 				}
 
-				for _, example := range examples {
+				for _, example := range ex.rewrites {
 					pattern, subst := example.old, example.new
 
 					m.reset()
 
 					if call, ok := pattern.(*ast.CallExpr); ok {
 						if ident, ok := call.Fun.(*ast.Ident); ok {
-							if lval := info.Uses[ident]; implicits[lval] {
+							if lval := ex.info.Uses[ident]; ex.implicits[lval] {
 								typ := assigneeType(stack, target.TypesInfo)
 								if typ == nil || !m.identical(typ, lval.Type().(*types.Signature).Params().At(0).Type()) {
 									continue
@@ -454,13 +532,19 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 						return
 					}
 
-					if !contextAppropriate(subst, info, stack, target.TypesInfo) {
+					if !contextAppropriate(subst, ex.info, stack, target.TypesInfo) {
 						continue
 					}
 
 					// Do not apply substitution in its own definition.
+					// TODO(rsc): This cache is wrong: it should build a different avoid map for
+					// each different subst, not cache the first for all rewrites.
+					// It's also probably wrong that an avoid applies to rewrites
+					// above it in the input. Restructing this would probably help
+					// but we'd run into the post-order traversal bug again too.
+					// More thought is needed.
 					if avoid == nil {
-						avoid = avoidOf(snap, avoids, info, subst)
+						avoid = avoidOf(ex.snap, ex.avoids, ex.info, subst)
 					}
 					for _, n := range stack {
 						if avoid[n] {
@@ -468,77 +552,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 						}
 					}
 
-					matchPos := stack[0].Pos()
-					// Substitute pattern variable values from match into substitution text.
-					// Because these values are coming from the same source location
-					// as they will eventually be placed into, import references and the
-					// like are all OK and don't need updating.
-					buf := refactor.NewBufferAt(snap, subst.Pos(), []byte(code[subst.Pos()-codePos:subst.End()-codePos]))
-					refactor.Walk(subst, func(stack []ast.Node) {
-						id, ok := stack[0].(*ast.Ident)
-						if !ok {
-							return
-						}
-
-						// Pattern variable -> captured subexpression.
-						if xobj, ok := m.wildcardObj(id); ok {
-							var repl string
-							switch xobj := xobj.(type) {
-							case *types.Var:
-								replx := m.env[xobj.Name()]
-								// TODO: captured subexpression may need import fixes?
-								repl = string(snap.Text(replx.Pos(), replx.End()))
-								if needParen(replx, stack) {
-									repl = "(" + repl + ")"
-								}
-							case *types.TypeName:
-								typ := m.envT[xobj.Name()]
-								repl = types.TypeString(typ, func(pkg *types.Package) string {
-									if pkg == target.Types {
-										return ""
-									}
-									// TODO(mdempsky): Handle missing and renamed imports.
-									return pkg.Name()
-								})
-							default:
-								panic("unreachable")
-							}
-							buf.Replace(id.Pos(), id.End(), repl)
-							return
-						}
-
-						// If this ID is p.ID where p is a package,
-						// make sure we have the import available,
-						// or if this is package p, remove the p.
-						if len(stack) >= 2 {
-							if sel, ok := stack[1].(*ast.SelectorExpr); ok {
-								if xid, ok := sel.X.(*ast.Ident); ok {
-									if pid, ok := info.Uses[xid].(*types.PkgName); ok {
-										snap.NeedImport(matchPos, xid.Name, pid.Imported())
-									}
-								}
-								return
-							}
-						}
-
-						// Is this ID referring to a global in the typesPkg? If so:
-						// - Is the typesPkg the target package? Then make sure the global isn't shadowed.
-						// - Otherwise, make sure the target has an import, and qualify the identifier.
-						obj := info.Uses[id]
-						if obj == nil {
-							panic("NO USES")
-						}
-						if obj != nil && typesPkg != nil && obj.Parent() == typesPkg.Scope() {
-							if typesPkg == target.Types {
-								if xobj := snap.LookupAt(id.Name, matchPos); xobj != obj {
-									snap.ErrorAt(matchPos, "%s is shadowed in replacement - %v", id.Name, xobj)
-								}
-							} else {
-								snap.NeedImport(matchPos, typesPkg.Name(), typesPkg)
-								buf.Insert(id.Pos(), typesPkg.Name()+".")
-							}
-						}
-					})
+					substText := m.applySubst(subst, stack[0].Pos())
 
 					// Now substitute completed substitution text into actual program.
 					substX := subst
@@ -546,7 +560,7 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 						if xobj, ok := m.wildcardObj(id); ok {
 							switch xobj := xobj.(type) {
 							case *types.Var:
-								substX = m.env[xobj.Name()]
+								substX = m.env[xobj]
 							case *types.TypeName:
 								panic("TODO: do we need to do anything here?")
 							default:
@@ -554,11 +568,10 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 							}
 						}
 					}
-					substText := buf.String()
 					if needParen(substX, stack) {
 						substText = "(" + substText + ")"
 					}
-					replaceMinimal(snap, stack[0].Pos(), stack[0].End(), substText)
+					replaceMinimal(ex.snap, stack[0].Pos(), stack[0].End(), substText)
 
 					// We're done with this AST node.
 					// Don't try any further patterns.
@@ -568,6 +581,80 @@ func applyEx(snap *refactor.Snapshot, targets []*refactor.Package, avoids []type
 		}
 	}
 	return
+}
+
+func (m *matcher) applySubst(subst ast.Node, matchPos token.Pos) string {
+	// Substitute pattern variable values from match into substitution text.
+	// Because these values are coming from the same source location
+	// as they will eventually be placed into, import references and the
+	// like are all OK and don't need updating.
+	buf := refactor.NewBufferAt(m.snap, subst.Pos(), []byte(m.code[subst.Pos()-m.codePos:subst.End()-m.codePos]))
+	refactor.Walk(subst, func(stack []ast.Node) {
+		id, ok := stack[0].(*ast.Ident)
+		if !ok {
+			return
+		}
+
+		// Pattern variable -> captured subexpression.
+		if xobj, ok := m.wildcardObj(id); ok {
+			var repl string
+			switch xobj := xobj.(type) {
+			case *types.Var:
+				replx := m.env[xobj]
+				// TODO: captured subexpression may need import fixes?
+				repl = string(m.snap.Text(replx.Pos(), replx.End()))
+				if needParen(replx, stack) {
+					repl = "(" + repl + ")"
+				}
+			case *types.TypeName:
+				typ := m.envT[xobj.Name()]
+				repl = types.TypeString(typ, func(pkg *types.Package) string {
+					if pkg == m.target.Types {
+						return ""
+					}
+					// TODO(mdempsky): Handle missing and renamed imports.
+					return pkg.Name()
+				})
+			default:
+				panic("unreachable")
+			}
+			buf.Replace(id.Pos(), id.End(), repl)
+			return
+		}
+
+		// If this ID is p.ID where p is a package,
+		// make sure we have the import available,
+		// or if this is package p, remove the p.
+		if len(stack) >= 2 {
+			if sel, ok := stack[1].(*ast.SelectorExpr); ok {
+				if xid, ok := sel.X.(*ast.Ident); ok {
+					if pid, ok := m.infoX.Uses[xid].(*types.PkgName); ok {
+						m.snap.NeedImport(matchPos, xid.Name, pid.Imported())
+					}
+				}
+				return
+			}
+		}
+
+		// Is this ID referring to a global in the typesPkg? If so:
+		// - Is the typesPkg the target package? Then make sure the global isn't shadowed.
+		// - Otherwise, make sure the target has an import, and qualify the identifier.
+		obj := m.infoX.Uses[id]
+		if obj == nil {
+			panic("NO USES")
+		}
+		if obj != nil && m.pkgX != nil && obj.Parent() == m.pkgX.Scope() {
+			if m.pkgX == m.target.Types {
+				if xobj := m.snap.LookupAt(id.Name, matchPos); xobj != obj {
+					m.snap.ErrorAt(matchPos, "%s is shadowed in replacement - %v", id.Name, xobj)
+				}
+			} else {
+				m.snap.NeedImport(matchPos, m.pkgX.Name(), m.pkgX)
+				buf.Insert(id.Pos(), m.pkgX.Name()+".")
+			}
+		}
+	})
+	return buf.String()
 }
 
 // needParen reports whether replacing stack[0] with newX requires parens around newX.
@@ -918,4 +1005,380 @@ func contextAppropriate(subst ast.Node, substInfo *types.Info, stack []ast.Node,
 	}
 
 	return true
+}
+
+func (ex *exArgs) runTypeAssert() {
+	snap := ex.snap
+	m := &matcher{
+		snap:    snap,
+		code:    ex.code,
+		codePos: ex.codePos,
+		fset:    snap.Fset(),
+		wildOK:  true,
+		wildPos: ex.codePos,
+		pkgX:    ex.typesPkg,
+		infoX:   ex.info,
+		env:     make(map[types.Object]ast.Expr),
+		envT:    make(map[string]types.Type),
+	}
+
+	// TODO(rsc): This is almost as wrong as the other avoidOf call.
+	// See comment above.
+	avoid := avoidOf(snap, ex.avoids, ex.info, nil)
+
+	done := make(map[types.Object][]span)
+
+	for _, target := range ex.targets {
+		m.target = target
+		m.pkgY = target.Types
+		m.infoY = target.TypesInfo
+		for _, file := range target.Files {
+			if file.Syntax == nil {
+				continue
+			}
+
+			refactor.Walk(file.Syntax, func(stack []ast.Node) {
+				for _, n := range stack {
+					if avoid[n] {
+						return
+					}
+				}
+
+				switch stack[0].(type) {
+				case *ast.IfStmt:
+					typeAssertIf(m, stack, ex.rewrites, done)
+				case *ast.CaseClause:
+					if _, ok := stack[2].(*ast.SwitchStmt); ok {
+						typeAssertCase(m, stack, ex.rewrites, done)
+					}
+				}
+			})
+		}
+	}
+}
+
+type span struct {
+	pos token.Pos
+	end token.Pos
+}
+
+func typeAssertIf(m *matcher, stack []ast.Node, typeAsserts []example, done map[types.Object][]span) {
+	ifs := stack[0].(*ast.IfStmt)
+	t, f := matchCond(m, ifs.Cond, typeAsserts)
+
+	if t != nil {
+		maybeAssert(m, t, ifs.Body.List, stack, done)
+	}
+	if f != nil {
+		if ifs.Else != nil {
+			maybeAssert(m, f, ifs.Else.(*ast.BlockStmt).List, stack, done)
+		} else {
+			// Special case: maybe insert the assertion after the if statement,
+			// if the "then" body diverts out of the scope where the assertion
+			// would be inserted.
+			if id, obj, ok := rematch(m, f); ok && alwaysReturns(ifs.Body.List) {
+				_ = id // Could use these to refine the check instead of using alwaysReturns.
+				_ = obj
+				// Find enclosing block statement.
+				for i := 1; i < len(stack); i++ {
+					var list []ast.Stmt
+					switch stmt := stack[i].(type) {
+					case *ast.IfStmt, *ast.LabeledStmt:
+						// Skipping past "IfStmt-Else IfStmt" and "LabeledStmt: IfStmt".
+						continue
+					case *ast.BlockStmt:
+						list = stmt.List
+					case *ast.CaseClause:
+						list = stmt.Body
+					default:
+						panic(fmt.Sprintf("unexpected %T", stmt))
+					}
+					for j := 0; j < len(list); j++ {
+						if list[j] == stack[i-1] {
+							maybeAssert(m, f, list[j+1:], stack[i:], done)
+							break
+						}
+					}
+					return
+				}
+			}
+		}
+	}
+}
+
+func typeAssertCase(m *matcher, stack []ast.Node, typeAsserts []example, done map[types.Object][]span) {
+	cas := stack[0].(*ast.CaseClause)
+	sw := stack[2].(*ast.SwitchStmt)
+
+	var t *typeAssertMatch
+	for _, val := range cas.List {
+		t1, _ := matchCondCmp(m, sw.Tag, token.EQL, val, typeAsserts)
+		if t1 == nil {
+			return
+		}
+		if t == nil {
+			t = t1
+		} else {
+			t = joinTypeAssert(m, t, t1)
+			if t == nil {
+				return
+			}
+		}
+	}
+	if t != nil {
+		maybeAssert(m, t, cas.Body, stack, done)
+	}
+}
+
+type typeAssertMatch struct {
+	condX, condY ast.Expr
+	ex           example
+}
+
+func matchCond(m *matcher, cond ast.Expr, typeAsserts []example) (t, f *typeAssertMatch) {
+	if p, ok := cond.(*ast.ParenExpr); ok {
+		return matchCond(m, p.X, typeAsserts)
+	}
+	if u, ok := cond.(*ast.UnaryExpr); ok && u.Op == token.NOT {
+		t, f := matchCond(m, u.X, typeAsserts)
+		return f, t
+	}
+	c, ok := cond.(*ast.BinaryExpr)
+	if !ok {
+		return nil, nil
+	}
+	switch c.Op {
+	case token.EQL, token.NEQ:
+		return matchCondCmp(m, c.X, c.Op, c.Y, typeAsserts)
+
+	case token.LAND:
+		tX, fX := matchCond(m, c.X, typeAsserts)
+		tY, fY := matchCond(m, c.Y, typeAsserts)
+		// X && Y true => both X and Y are true, so both tX and tY apply. pick first (mostly likely only one match).
+		if tX != nil {
+			t = tX
+		} else {
+			t = tY
+		}
+		// X && Y false => one of X and Y is false but we don't know which.
+		// Only hope is that they lead to the same conclusion.
+		if fX != nil && fY != nil {
+			f = joinTypeAssert(m, fX, fY)
+		}
+		return
+
+	case token.LOR:
+		tX, fX := matchCond(m, c.X, typeAsserts)
+		tY, fY := matchCond(m, c.Y, typeAsserts)
+		// X || Y true => one of X or Y is true, but we don't know which.
+		// Only hope is that they lead to the same conclusion.
+		if tX != nil && tY != nil {
+			t = joinTypeAssert(m, tX, tY)
+		}
+		// X || Y false => both X and Y are false, so both fX and fY apply. pick first.
+		if fX != nil {
+			f = fX
+		} else {
+			f = fY
+		}
+		return
+	}
+
+	return nil, nil
+}
+
+func matchCondCmp(m *matcher, x ast.Expr, op token.Token, y ast.Expr, typeAsserts []example) (t, f *typeAssertMatch) {
+	for _, ex := range typeAsserts {
+		p := ex.old.(*ast.BinaryExpr)
+		m.reset()
+		if m.match(p.X, x) && m.match(p.Y, y) {
+			if op == token.EQL {
+				t = &typeAssertMatch{x, y, ex} // cond true => rewrite applies
+			} else {
+				f = &typeAssertMatch{x, y, ex} // cond (x != y) false => rewrite applies
+			}
+			return
+		}
+	}
+	return nil, nil
+}
+
+func joinTypeAssert(m *matcher, t1, t2 *typeAssertMatch) *typeAssertMatch {
+	m.reset()
+	p1 := t1.ex.old.(*ast.BinaryExpr)
+	p2 := t2.ex.old.(*ast.BinaryExpr)
+	if m.match(p1.X, t1.condX) && m.match(p2.X, t2.condX) && m.match(p1.Y, t1.condY) && m.match(p2.Y, t2.condY) {
+		pkgY, infoY := m.pkgY, m.infoY
+		m.pkgY, m.infoY = m.pkgX, m.infoX
+		ok := m.match(t1.ex.new, t2.ex.new)
+		m.pkgY, m.infoY = pkgY, infoY
+		if ok {
+			// The match environments are compatible,
+			// and the conclusions are the same.
+			return t1
+		}
+	}
+	return nil
+}
+
+// alwaysReturns reports whether a particular sequence of statements
+// in a body is guaranteed to return from the function.
+func alwaysReturns(list []ast.Stmt) bool {
+	if len(list) == 0 {
+		return false
+	}
+
+	// Any branch may end up elsewhere.
+	// TODO: We could refine this a bit.
+	for _, stmt := range list {
+		bad := false
+		refactor.Walk(stmt, func(stack []ast.Node) {
+			if _, ok := stack[0].(*ast.BranchStmt); ok {
+				bad = true
+			}
+		})
+		if bad {
+			return false
+		}
+	}
+
+	// Otherwise the last statement is what matters.
+	stmt := list[len(list)-1]
+	for {
+		if l, ok := stmt.(*ast.LabeledStmt); ok {
+			stmt = l.Stmt
+			continue
+		}
+		break
+	}
+
+	switch stmt := stmt.(type) {
+	case *ast.ReturnStmt:
+		return true
+	case *ast.IfStmt:
+		return stmt.Else != nil && alwaysReturns(stmt.Body.List) && alwaysReturns(stmt.Else.(*ast.BlockStmt).List)
+	case *ast.SwitchStmt:
+		def := false
+		for _, cas := range stmt.Body.List {
+			cas := cas.(*ast.CaseClause)
+			if !alwaysReturns(cas.Body) {
+				return false
+			}
+			if cas.List == nil {
+				def = true
+			}
+		}
+		return def
+	}
+	return false
+}
+
+func rematch(m *matcher, t *typeAssertMatch) (id *ast.Ident, obj types.Object, allOK bool) {
+	m.reset()
+	p1 := t.ex.old.(*ast.BinaryExpr)
+	if !m.match(p1.X, t.condX) || !m.match(p1.Y, t.condY) {
+		m.snap.ErrorAt(t.condY.Pos(), "internal error: lost match")
+	}
+
+	xid := t.ex.new.(*ast.TypeAssertExpr).X.(*ast.Ident)
+	xobj := m.infoX.Uses[xid]
+	if xobj == nil {
+		m.snap.ErrorAt(t.condY.Pos(), "internal error: lost obj for %s", xid.Name)
+		return
+	}
+	x := m.env[xobj]
+	if x == nil {
+		m.snap.ErrorAt(t.condY.Pos(), "internal error: lost match for %s", xid.Name)
+		return
+	}
+	id, ok := x.(*ast.Ident)
+	if !ok {
+		// Cannot introduce := for non-identifier. Ignore.
+		return
+	}
+	obj = m.infoY.Uses[id]
+	if obj == nil {
+		m.snap.ErrorAt(t.condY.Pos(), "internal error: lost match for %s", id.Name)
+		return
+	}
+	return id, obj, true
+}
+
+func maybeAssert(m *matcher, t *typeAssertMatch, list []ast.Stmt, stack []ast.Node, done map[types.Object][]span) {
+	id, obj, ok := rematch(m, t)
+	if !ok || len(list) == 0 {
+		return
+	}
+	if !types.IsInterface(m.infoY.TypeOf(id)) {
+		return
+	}
+	matchPos := list[0].Pos()
+	if m.snap.ScopeAt(matchPos-1) == obj.Parent() {
+		// Cannot reassert in same scope as declaration.
+		return
+	}
+	for _, s := range done[obj] {
+		if s.pos <= matchPos && matchPos < s.end {
+			// Already reasserted in higher syntax.
+			return
+		}
+	}
+
+	found := false
+	assigned := false
+	badAssign := false
+	for _, stmt := range list {
+		refactor.Walk(stmt, func(stack []ast.Node) {
+			id, ok := stack[0].(*ast.Ident)
+			if !ok {
+				return
+			}
+			if m.infoY.Uses[id] != obj {
+				return
+			}
+			if as, ok := stack[1].(*ast.AssignStmt); ok {
+				for i, l := range as.Lhs {
+					if l == id {
+						assigned = true
+						if !types.AssignableTo(m.infoY.TypeOf(as.Rhs[i]), m.infoX.TypeOf(t.ex.new.(ast.Expr))) {
+							badAssign = true
+							return
+						}
+						return
+					}
+				}
+			}
+			if _, ok := stack[1].(*ast.TypeAssertExpr); ok {
+				// Cannot use concrete type in type assertion.
+				badAssign = true
+				return
+			}
+			found = true
+		})
+	}
+	if !found {
+		// m.snap.InsertAt(list[0].Pos(), "/* not found */")
+		return
+	}
+	if badAssign {
+		// m.snap.InsertAt(list[0].Pos(), "/* bad assign */")
+		return
+	}
+	if assigned && !alwaysReturns(list) {
+		// TODO: scan forward in list looking to see if it falls through.
+		// if not, all good.
+
+		// TODO: otherwise, look in stack beyond block for use anywhere
+		// if so, bad.
+		// keep track of labels seen and gotos seen.
+		// if any label is unseen but the goto is seen,
+		// label is above the assignment, so bad.
+		// if closing a for loop, bad
+		// if final part terminates, OK.
+		// m.snap.InsertAt(list[0].Pos(), "/* assigned */")
+		return
+	}
+
+	done[obj] = append(done[obj], span{matchPos, list[len(list)-1].End()})
+	m.snap.InsertAt(matchPos, id.Name+" := "+m.applySubst(t.ex.new, matchPos)+";")
 }

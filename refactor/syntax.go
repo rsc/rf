@@ -115,6 +115,21 @@ func (s *Snapshot) FileAt(pos token.Pos) (*Package, *ast.File) {
 	return nil, nil
 }
 
+func (s *Snapshot) ScopeAt(pos token.Pos) *types.Scope {
+	for _, p := range s.packages {
+		for _, file := range p.Files {
+			if file.Syntax == nil {
+				continue
+			}
+			f := file.Syntax
+			if f.Pos() <= pos && pos < f.End() {
+				return p.TypesInfo.Scopes[f].Innermost(pos)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Snapshot) LookupAt(name string, pos token.Pos) types.Object {
 	for _, p := range s.packages {
 		for _, file := range p.Files {

@@ -1,0 +1,51 @@
+typeassert {
+	var i I
+	i.M() == 1 -> i.(m1)
+	i.M() == 11 -> i.(m1)
+}
+-- x.go --
+package p
+
+type I interface {
+	M() int
+	IsM1() bool
+}
+type m1 int
+
+func (m1) M() int     { return 1 }
+func (m1) IsM1() bool { return true }
+
+func f() I { return nil }
+
+var b bool
+
+func _() {
+	fn := f()
+	if fn.M() != 1 {
+		return
+	}
+	if fn.M() != 1 {
+		return
+	}
+
+	{
+		if fn.M() != 1 {
+			return
+		} // match
+		if fn.M() != 1 {
+			return
+		}
+	}
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -26,6 +26,7 @@
+ 		if fn.M() != 1 {
+ 			return
+ 		} // match
++		fn := fn.(m1)
+ 		if fn.M() != 1 {
+ 			return
+ 		}

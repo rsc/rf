@@ -18,17 +18,23 @@ import (
 	"log"
 	"os"
 	"reflect"
+
+	"rsc.io/rf/refactor"
 )
 
 type matcher struct {
+	snap    *refactor.Snapshot
+	target  *refactor.Package
+	code    string
+	codePos token.Pos
 	fset    *token.FileSet
 	wildOK  bool
 	wildPos token.Pos
-	pkgX    *types.Package
-	pkgY    *types.Package
+	pkgX    *types.Package // info for X side (pattern)
 	infoX   *types.Info
+	pkgY    *types.Package // info for Y side (package being matched)
 	infoY   *types.Info
-	env     map[string]ast.Expr
+	env     map[types.Object]ast.Expr
 	envT    map[string]types.Type
 	stricts map[types.Object]bool
 	verbose bool
@@ -131,9 +137,23 @@ func (m *matcher) matchExpr(x, y ast.Expr) bool {
 		return m.identical(xtv.Type, ytv.Type)
 	}
 
+	// Is y a bound wildcard? If so, replace with binding.
+	// Can happen during typeassert unification of patterns.
+	if yobj, ok := m.wildcardObj(y); ok {
+		if repl := m.env[yobj]; repl != nil {
+			return m.matchExpr(x, repl)
+		}
+	}
+
 	// Is x a wildcard?  (a reference to a 'before' parameter)
 	if xobj, ok := m.wildcardObj(x); ok {
-		return m.matchWildcard(xobj, y)
+		// Is x a bound wildcard? If so, replace with binding.
+		if repl := m.env[xobj]; repl != nil {
+			return m.matchExpr(repl, y)
+		}
+
+		// Otherwise x is an unbound wildcard - bind it.
+		return m.bindWildcard(xobj, y)
 	}
 
 	// Object identifiers (including pkg-qualified ones)
@@ -279,13 +299,10 @@ func (m *matcher) matchSelectorExpr(x, y *ast.SelectorExpr) bool {
 		switch xobj := xobj.(type) {
 		case *types.Var:
 			field := x.Sel.Name
-			yt := typeOf(m.infoX, y.X)
+			yt := typeOf(m.infoY, y.X)
 			o, _, _ := types.LookupFieldOrMethod(yt, true, m.pkgY, field)
-			if o == nil {
-				o, _, _ = types.LookupFieldOrMethod(yt, true, m.pkgX, field)
-			}
 			if o != nil {
-				m.env[xobj.Name()] = y.X // record binding
+				m.env[xobj] = y.X // record binding
 				return true
 			}
 		case *types.TypeName:
@@ -297,7 +314,7 @@ func (m *matcher) matchSelectorExpr(x, y *ast.SelectorExpr) bool {
 	return m.matchExpr(x.X, y.X)
 }
 
-func (m *matcher) matchWildcard(xobj types.Object, y ast.Expr) bool {
+func (m *matcher) bindWildcard(xobj types.Object, y ast.Expr) bool {
 	name := xobj.Name()
 
 	if m.verbose {
@@ -315,7 +332,7 @@ func (m *matcher) matchWildcard(xobj types.Object, y ast.Expr) bool {
 		if !ytv.IsType() {
 			return false
 		}
-
+		// TODO(rsc): Returning true should only happen when a map entry has been created.
 		return m.assignableTo(yt, xobj.Type())
 
 	case *types.Var:
@@ -353,28 +370,11 @@ func (m *matcher) matchWildcard(xobj types.Object, y ast.Expr) bool {
 			return false
 		}
 	}
-
-	// A wildcard matches any expression.
-	// If it appears multiple times in the pattern, it must match
-	// the same expression each time.
-	// TODO(rsc): This doesn't look like the right unification logic.
-	if old, ok := m.env[name]; ok {
-		// found existing binding
-		m.wildOK = false
-		r := m.matchExpr(old, y)
-		if m.verbose {
-			fmt.Fprintf(os.Stderr, "%t secondary match, primary was %s\n",
-				r, astString(m.fset, old))
-		}
-		m.wildOK = true
-		return r
-	}
-
 	if m.verbose {
-		fmt.Fprintf(os.Stderr, "primary match\n")
+		fmt.Fprintf(os.Stderr, "bind match\n")
 	}
 
-	m.env[name] = y // record binding
+	m.env[xobj] = y // record binding
 	return true
 }
 
@@ -585,6 +585,9 @@ func (m *matcher) matchWildcardType(xname *types.Named, y types.Type) bool {
 	// If it appears multiple times in the pattern, it must match
 	// the same expression each time.
 	// TODO(rsc): This doesn't look like the right unification logic.
+	// Better logic would be to apply envT replacements early in
+	// the recursion and then rename matchWildcardType to
+	// bindWildcardType, calling it only with an unbound wildcard.
 	if old, ok := m.envT[name]; ok {
 		// found existing binding
 		m.wildOK = false

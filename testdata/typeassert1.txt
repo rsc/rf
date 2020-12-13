@@ -1,0 +1,241 @@
+typeassert {
+	var i I
+	i.M() == 1 -> i.(m1)
+	i.IsM1() == true -> i.(m1)
+}
+-- x.go --
+package p
+
+type I interface {
+	M() int
+	IsM1() bool
+}
+type m1 int
+
+func (m1) M() int     { return 1 }
+func (m1) IsM1() bool { return true }
+
+func f() I { return nil }
+
+var b bool
+
+func _(x I) {
+	if x.M() == 1 { // match 1
+		_ = x
+	}
+	if f().M() == 1 { // cannot introduce variable for f()
+		_ = f()
+	}
+	if x.M() == 1 || x.M() == 1 { // match 2
+		_ = x
+	}
+	if x.M() == 1 || x.IsM1() == true { // match 3
+		_ = x
+	}
+	if x.M() == 1 || true { // no match
+		_ = x
+	}
+	if x.M() != 1 { // no match
+		_ = x
+	} else { // match in else 4
+		_ = x
+	}
+
+	if !(x.M() != 1) { // match 5
+		_ = x
+	} else {
+		_ = x
+	}
+
+	if x.M() == 1 && b { // match 6
+		_ = x
+	}
+
+	if x.M() == 1 || b { // no match
+		_ = x
+	}
+
+	if !(x.M() != 1 || b) { // match 7
+		_ = x
+	}
+
+	if !(x.M() != 1 && b) { // no match
+		_ = x
+	}
+
+	if x.M() == 1 { // no match, unused
+	}
+	if x.M() == 1 { // no match, reassigned incompatible type
+		_ = x
+		var i I
+		x = i
+	}
+
+	{
+		var i I
+		x := i
+		if x.M() != 1 {
+			// do nothing
+		}
+		_ = x
+	}
+	{
+		var i I
+		x := i
+		{
+			if x.M() != 1 {
+				return
+			} // match 8
+			_ = x
+		}
+	}
+
+	if x.M() == 1 { // match 9, reassigned compatibly and diverts before use below
+		_ = x
+		x = m1(1)
+		return
+	}
+	_ = x
+
+	if x.M() == 1 { // no match, reassigned incompatibly
+		_ = x
+		var i I
+		x = i
+		return
+	}
+
+	if x.M() == 1 { // no match, reassigned compatibly but used below
+		_ = x
+		x = m1(1)
+	}
+	_ = x
+
+	{
+		var x I
+		switch 1 {
+		case 1:
+			if x.M() != 1 {
+				return
+			} // match 10
+			_ = x
+		}
+		_ = x
+	}
+
+	{
+		var x I
+		switch 1 {
+		case 1:
+			if x.M() != 1 {
+				return
+			} // match 11
+			_ = x
+			x = m1(1)
+			return
+		}
+		_ = x
+	}
+
+	{
+		var x I
+		switch 1 {
+		case 1:
+			if x.M() != 1 {
+				break
+			} // no match: reassignment
+			_ = x
+			x = m1(1)
+		}
+		_ = x
+	}
+
+	{
+		var x I
+		if x.M() != 1 {
+			return
+		} // no match: redeclaring type assertion would be in same scope as original declaration
+		_ = x
+	}
+
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -15,15 +15,18 @@
+
+ func _(x I) {
+ 	if x.M() == 1 { // match 1
++		x := x.(m1)
+ 		_ = x
+ 	}
+ 	if f().M() == 1 { // cannot introduce variable for f()
+ 		_ = f()
+ 	}
+ 	if x.M() == 1 || x.M() == 1 { // match 2
++		x := x.(m1)
+ 		_ = x
+ 	}
+ 	if x.M() == 1 || x.IsM1() == true { // match 3
++		x := x.(m1)
+ 		_ = x
+ 	}
+ 	if x.M() == 1 || true { // no match
+@@ -32,16 +35,19 @@
+ 	if x.M() != 1 { // no match
+ 		_ = x
+ 	} else { // match in else 4
++		x := x.(m1)
+ 		_ = x
+ 	}
+
+ 	if !(x.M() != 1) { // match 5
++		x := x.(m1)
+ 		_ = x
+ 	} else {
+ 		_ = x
+ 	}
+
+ 	if x.M() == 1 && b { // match 6
++		x := x.(m1)
+ 		_ = x
+ 	}
+
+@@ -50,6 +56,7 @@
+ 	}
+
+ 	if !(x.M() != 1 || b) { // match 7
++		x := x.(m1)
+ 		_ = x
+ 	}
+
+@@ -80,11 +87,13 @@
+ 			if x.M() != 1 {
+ 				return
+ 			} // match 8
++			x := x.(m1)
+ 			_ = x
+ 		}
+ 	}
+
+ 	if x.M() == 1 { // match 9, reassigned compatibly and diverts before use below
++		x := x.(m1)
+ 		_ = x
+ 		x = m1(1)
+ 		return
+@@ -111,6 +120,7 @@
+ 			if x.M() != 1 {
+ 				return
+ 			} // match 10
++			x := x.(m1)
+ 			_ = x
+ 		}
+ 		_ = x
+@@ -123,6 +133,7 @@
+ 			if x.M() != 1 {
+ 				return
+ 			} // match 11
++			x := x.(m1)
+ 			_ = x
+ 			x = m1(1)
+ 			return

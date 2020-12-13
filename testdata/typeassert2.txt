@@ -1,0 +1,140 @@
+typeassert {
+	var i I
+	i.M() == 1 -> i.(m1)
+	i.M() == 11 -> i.(m1)
+}
+-- x.go --
+package p
+
+type I interface {
+	M() int
+	IsM1() bool
+}
+type m1 int
+
+func (m1) M() int     { return 1 }
+func (m1) IsM1() bool { return true }
+
+func f() I { return nil }
+
+var b bool
+
+func _() {
+	{
+		var x I
+		switch x.M() {
+		case 1: // match 1
+			_ = x
+		}
+		_ = x
+	}
+
+	{
+		var x I
+		switch x.M() {
+		case 1, 2: // no match
+			_ = x
+		}
+		_ = x
+	}
+
+	{
+		var x I
+		switch x.M() {
+		case 1, 11: // match 2 - both are m1
+			_ = x
+		}
+		_ = x
+	}
+
+	{
+		var x I
+		switch x.M() {
+		case 1: // no match - reassigned and used later
+			_ = x
+			x = m1(1)
+		}
+		_ = x
+	}
+
+	{
+		var x I
+		switch x.M() {
+		case 1: // match 3 - reassigned and returned
+			_ = x
+			x = m1(1)
+			_ = x
+			return
+		}
+		_ = x
+	}
+
+	{
+		var x I
+		switch x.M() {
+		case 1: // no match - used in type assertion
+			_ = x.(m1)
+			_ = x
+			return
+		}
+	}
+
+	{
+		var x m1
+		switch x.M() {
+		case 1: // no match - x is not an interface
+			_ = x
+			return
+		}
+	}
+
+	{
+		var x I
+
+		if x.M() == 1 || x.M() == 11 { // match
+			_ = x
+			switch x.M() {
+			case 1: // no match - already converted
+				_ = x
+			case 11: // no match - already converted
+				_ = x
+			}
+		}
+	}
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -18,6 +18,7 @@
+ 		var x I
+ 		switch x.M() {
+ 		case 1: // match 1
++			x := x.(m1)
+ 			_ = x
+ 		}
+ 		_ = x
+@@ -36,6 +37,7 @@
+ 		var x I
+ 		switch x.M() {
+ 		case 1, 11: // match 2 - both are m1
++			x := x.(m1)
+ 			_ = x
+ 		}
+ 		_ = x
+@@ -55,6 +57,7 @@
+ 		var x I
+ 		switch x.M() {
+ 		case 1: // match 3 - reassigned and returned
++			x := x.(m1)
+ 			_ = x
+ 			x = m1(1)
+ 			_ = x
+@@ -86,6 +89,7 @@
+ 		var x I
+
+ 		if x.M() == 1 || x.M() == 11 { // match
++			x := x.(m1)
+ 			_ = x
+ 			switch x.M() {
+ 			case 1: // no match - already converted
