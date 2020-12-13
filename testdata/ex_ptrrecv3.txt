@@ -1,0 +1,27 @@
+ex {
+	var pp *T
+	F(pp) -> F(pp.Take())
+}
+-- x.go --
+package p
+
+type T int
+
+func (t *T) Take() *T { return t }
+func F(*T)            {}
+
+func _() {
+	var t T
+	F(&t)
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -7,5 +7,5 @@
+
+ func _() {
+ 	var t T
+-	F(&t)
++	F(t.Take())
+ }

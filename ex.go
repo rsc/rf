@@ -439,7 +439,7 @@ func (ex *exArgs) run() {
 		wildPos: ex.codePos,
 		pkgX:    ex.patternPkg.Types,
 		infoX:   ex.patternPkg.TypesInfo,
-		env:     make(map[types.Object]ast.Expr),
+		env:     make(map[types.Object]envBind),
 		envT:    make(map[string]types.Type),
 		stricts: ex.stricts,
 	}
@@ -531,26 +531,8 @@ func (ex *exArgs) run() {
 						}
 					}
 
-					substText := m.applySubst(subst, stack[0].Pos())
-
-					// Now substitute completed substitution text into actual program.
-					substX := subst
-					if id, ok := substX.(*ast.Ident); ok {
-						if xobj, ok := m.wildcardObj(id); ok {
-							switch xobj := xobj.(type) {
-							case *types.Var:
-								substX = m.env[xobj]
-							case *types.TypeName:
-								panic("TODO: do we need to do anything here?")
-							default:
-								panic("unreachable")
-							}
-						}
-					}
-					if needParen(substX, stack) {
-						substText = "(" + substText + ")"
-					}
-					replaceMinimal(ex.snap, stack[0].Pos(), stack[0].End(), substText)
+					substText, target := m.applySubst(subst, stack)
+					replaceMinimal(ex.snap, target.Pos(), target.End(), substText)
 
 					// We're done with this AST node.
 					// Don't try any further patterns.
@@ -562,11 +544,12 @@ func (ex *exArgs) run() {
 	return
 }
 
-func (m *matcher) applySubst(subst ast.Node, matchPos token.Pos) string {
+func (m *matcher) applySubst(subst ast.Node, matchContext []ast.Node) (string, ast.Node) {
 	// Substitute pattern variable values from match into substitution text.
 	// Because these values are coming from the same source location
 	// as they will eventually be placed into, import references and the
 	// like are all OK and don't need updating.
+	matchPos := matchContext[0].Pos()
 	buf := refactor.NewBufferAt(m.snap, subst.Pos(), []byte(m.code[subst.Pos()-m.codePos:subst.End()-m.codePos]))
 	refactor.Walk(subst, func(stack []ast.Node) {
 		id, ok := stack[0].(*ast.Ident)
@@ -579,12 +562,83 @@ func (m *matcher) applySubst(subst ast.Node, matchPos token.Pos) string {
 			var repl string
 			switch xobj := xobj.(type) {
 			case *types.Var:
-				replx := m.env[xobj]
+				b := m.env[xobj]
+				replx := b.matchExpr
+
+				var outer ast.Node
+				if len(stack) >= 2 {
+					outer = stack[1]
+				} else if len(matchContext) >= 2 {
+					outer = matchContext[1]
+				}
+
+				// Apply implicit op except in selector expressions.
+				op := b.implicitOp
+				if op != 0 && outer != nil {
+					if sel, ok := outer.(*ast.SelectorExpr); ok && sel.X == id {
+						// Selector will apply the implicit op for us.
+						op = 0
+					}
+					if addr, ok := outer.(*ast.UnaryExpr); ok && op == '*' && addr.Op == token.AND {
+						// Delete the outer &.
+						buf.Delete(outer.Pos(), outer.Pos()+1)
+						op = 0
+					}
+					if _, ok := outer.(*ast.StarExpr); ok && op == '&' {
+						// Delete the outer *.
+						buf.Delete(outer.Pos(), outer.Pos()+1)
+						op = 0
+					}
+				}
+				if op == '*' {
+					if addr, ok := replx.(*ast.UnaryExpr); ok && addr.Op == token.AND {
+						// Delete the inner &.
+						replx = addr.X
+						op = 0
+					}
+					if px, ok := replx.(*ast.ParenExpr); ok {
+						if addr, ok := px.X.(*ast.UnaryExpr); ok && addr.Op == token.AND {
+							// Delete the inner &.
+							replx = addr.X
+							op = 0
+						}
+					}
+				}
+				if op == '&' {
+					if addr, ok := replx.(*ast.UnaryExpr); ok && addr.Op == token.AND {
+						// Delete the inner *.
+						replx = addr.X
+						op = 0
+					}
+					if px, ok := replx.(*ast.ParenExpr); ok {
+						if addr, ok := px.X.(*ast.UnaryExpr); ok && addr.Op == token.AND {
+							// Delete the inner *.
+							replx = addr.X
+							op = 0
+						}
+					}
+				}
+
+				// If substituting an explicit * or & into a selector, drop the * or & when possible.
+				if sel, ok := outer.(*ast.SelectorExpr); ok && sel.X == id && op == 0 {
+					if addr, ok := replx.(*ast.UnaryExpr); ok && addr.Op == token.AND && !isPointer(typeOf(m.infoY, addr.X)) {
+						// Selector will insert implicit & to convert non-pointer to pointer.
+						replx = addr.X
+					} else if star, ok := replx.(*ast.StarExpr); ok && !isPointer(typeOf(m.infoY, star)) {
+						// Selector will insert implicit * to convert pointer to non-pointer.
+						replx = star.X
+					}
+				}
+
 				// The captured subexpression does not need import fixes,
 				// because it is coming from the original source file (where it is staying).
-				// It can be substituted directly, possibly with parens.
+				// It can be substituted directly, possibly with parens and implicit * or &.
 				repl = string(m.snap.Text(replx.Pos(), replx.End()))
-				if needParen(replx, stack) {
+				if op != 0 {
+					repl = string(b.implicitOp) + repl
+					replx = &ast.UnaryExpr{X: replx} // only for precedence for needParen
+				}
+				if needParen(replx, stack) || len(stack) == 1 && needParen(replx, matchContext) {
 					repl = "(" + repl + ")"
 				}
 			case *types.TypeName:
@@ -643,7 +697,17 @@ func (m *matcher) applySubst(subst ast.Node, matchPos token.Pos) string {
 			}
 		}
 	})
-	return buf.String()
+
+	if needParen(subst, matchContext) {
+		return "(" + buf.String() + ")", matchContext[0]
+	}
+
+	return buf.String(), matchContext[0]
+}
+
+func isPointer(t types.Type) bool {
+	_, ok := t.(*types.Pointer)
+	return ok
 }
 
 // needParen reports whether replacing stack[0] with newX requires parens around newX.
@@ -1007,7 +1071,7 @@ func (ex *exArgs) runTypeAssert() {
 		wildPos: ex.codePos,
 		pkgX:    ex.patternPkg.Types,
 		infoX:   ex.patternPkg.TypesInfo,
-		env:     make(map[types.Object]ast.Expr),
+		env:     make(map[types.Object]envBind),
 		envT:    make(map[string]types.Type),
 	}
 
@@ -1275,12 +1339,12 @@ func rematch(m *matcher, t *typeAssertMatch) (id *ast.Ident, obj types.Object, a
 		m.snap.ErrorAt(t.condY.Pos(), "internal error: lost obj for %s", xid.Name)
 		return
 	}
-	x := m.env[xobj]
-	if x == nil {
+	x, ok := m.env[xobj]
+	if !ok {
 		m.snap.ErrorAt(t.condY.Pos(), "internal error: lost match for %s", xid.Name)
 		return
 	}
-	id, ok := x.(*ast.Ident)
+	id, ok = x.matchExpr.(*ast.Ident)
 	if !ok {
 		// Cannot introduce := for non-identifier. Ignore.
 		return
@@ -1369,5 +1433,6 @@ func maybeAssert(m *matcher, t *typeAssertMatch, list []ast.Stmt, stack []ast.No
 	}
 
 	done[obj] = append(done[obj], span{matchPos, list[len(list)-1].End()})
-	m.snap.InsertAt(matchPos, id.Name+" := "+m.applySubst(t.ex.new, matchPos)+";")
+	substText, _ := m.applySubst(t.ex.new, []ast.Node{list[0]})
+	m.snap.InsertAt(matchPos, id.Name+" := "+substText+";")
 }

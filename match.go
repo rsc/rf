@@ -34,10 +34,15 @@ type matcher struct {
 	infoX   *types.Info
 	pkgY    *types.Package // info for Y side (package being matched)
 	infoY   *types.Info
-	env     map[types.Object]ast.Expr
+	env     map[types.Object]envBind
 	envT    map[string]types.Type
 	stricts map[types.Object]bool
 	verbose bool
+}
+
+type envBind struct {
+	implicitOp rune
+	matchExpr  ast.Expr
 }
 
 func (m *matcher) reset() {
@@ -140,16 +145,16 @@ func (m *matcher) matchExpr(x, y ast.Expr) bool {
 	// Is y a bound wildcard? If so, replace with binding.
 	// Can happen during typeassert unification of patterns.
 	if yobj, ok := m.wildcardObj(y); ok {
-		if repl := m.env[yobj]; repl != nil {
-			return m.matchExpr(x, repl)
+		if repl, ok := m.env[yobj]; ok {
+			return m.matchExpr(x, repl.matchExpr)
 		}
 	}
 
 	// Is x a wildcard?  (a reference to a 'before' parameter)
 	if xobj, ok := m.wildcardObj(x); ok {
 		// Is x a bound wildcard? If so, replace with binding.
-		if repl := m.env[xobj]; repl != nil {
-			return m.matchExpr(repl, y)
+		if repl, ok := m.env[xobj]; ok {
+			return m.matchExpr(repl.matchExpr, y)
 		}
 
 		// Otherwise x is an unbound wildcard - bind it.
@@ -200,8 +205,8 @@ func (m *matcher) matchExpr(x, y ast.Expr) bool {
 
 	case *ast.SelectorExpr:
 		y := y.(*ast.SelectorExpr)
-		return m.matchSelectorExpr(x, y) &&
-			m.infoX.Selections[x].Obj() == m.infoY.Selections[y].Obj()
+		return m.infoX.Selections[x].Obj() == m.infoY.Selections[y].Obj() &&
+			m.matchSelectorExpr(x, y)
 
 	case *ast.IndexExpr:
 		y := y.(*ast.IndexExpr)
@@ -295,23 +300,69 @@ func (m *matcher) wildcardObj(x ast.Expr) (types.Object, bool) {
 }
 
 func (m *matcher) matchSelectorExpr(x, y *ast.SelectorExpr) bool {
-	if xobj, ok := m.wildcardObj(x.X); ok {
-		switch xobj := xobj.(type) {
-		case *types.Var:
-			field := x.Sel.Name
-			yt := typeOf(m.infoY, y.X)
-			o, _, _ := types.LookupFieldOrMethod(yt, true, m.pkgY, field)
-			if o != nil {
-				m.env[xobj] = y.X // record binding
-				return true
-			}
-		case *types.TypeName:
-			panic("TODO: does this happen?")
-		default:
-			panic("unreachable")
-		}
+	// Caller has already checked that the selected fields/methods are the same.
+	// We need to concern ourselves with the left-hand side.
+	xobj, ok := m.wildcardObj(x.X)
+	if !ok {
+		return m.matchExpr(x.X, y.X)
 	}
-	return m.matchExpr(x.X, y.X)
+	xvar, ok := xobj.(*types.Var)
+	if !ok {
+		// Should not happen.
+		return false
+	}
+	fm := m.infoX.Selections[x]
+	if fm == nil {
+		// Should not happen.
+		return false
+	}
+
+	// Selector match is tricky. Consider:
+	//
+	//	var p *bytes.Buffer
+	//	p.Len() -> whatever
+	//
+	// We expect it to match b.Len() where b is a bytes.Buffer,
+	// with p matching &b. (The receiver in b.Len is implicitly &b.)
+	//
+	// During substitution, if we are using p as a method receiver,
+	// we can substitute b and let the implicit & be unsaid.
+	// But if we are using p in another context, we need to substitute &b
+	// for the types to match. We record b as the variable binding
+	// and remember that we need to insert & on each use outside
+	// a method invocation or field access.
+	//
+	// Similarly, consider:
+	//
+	//	var t time.Time
+	//	t.String() -> whatever
+	//
+	// We expect it to match p.String() where p is a *time.Time,
+	// with t matching *p. (The receiver in p.String is implicitly *p.)
+	// The same handling applies, but for an implicit * instead of an implicit &.
+	//
+	// The same is true for fields as for methods.
+	xXt := typeOf(m.infoX, x.X)
+	yXt := typeOf(m.infoY, y.X)
+
+	// Note: Must only call m.identical once, when we're sure that a
+	// false result will sink the overall match, because a failed match may
+	// leave bindings that preclude any future matches.
+	matchExpr := y.X
+	var op rune
+	if reflect.TypeOf(xXt) != reflect.TypeOf(yXt) {
+		if pxXt, ok := xXt.(*types.Pointer); ok && m.identical(pxXt.Elem(), yXt) {
+			op = '&'
+		} else if pyXt, ok := yXt.(*types.Pointer); ok && m.identical(xXt, pyXt.Elem()) {
+			op = '*'
+		} else {
+			return false
+		}
+	} else if !m.identical(xXt, yXt) {
+		return false
+	}
+	m.env[xvar] = envBind{matchExpr: matchExpr, implicitOp: op}
+	return true
 }
 
 func (m *matcher) bindWildcard(xobj types.Object, y ast.Expr) bool {
@@ -374,7 +425,7 @@ func (m *matcher) bindWildcard(xobj types.Object, y ast.Expr) bool {
 		fmt.Fprintf(os.Stderr, "bind match\n")
 	}
 
-	m.env[xobj] = y // record binding
+	m.env[xobj] = envBind{matchExpr: y} // record binding
 	return true
 }
 

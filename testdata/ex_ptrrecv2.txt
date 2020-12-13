@@ -1,0 +1,48 @@
+ex {
+	var tt T
+	var pp *T
+
+	TP(&tt) -> tt.P()
+	TP(pp) -> pp.P()
+	TV(*pp) -> pp.V()
+	TV(tt) -> tt.V()
+}
+-- x.go --
+package p
+
+type T int
+
+func (t *T) P() {}
+func (t T) V()  {}
+
+func TP(t *T) {}
+func TV(t T)  {}
+
+func _() {
+	var t T
+	TP(&t)
+	TV(t)
+
+	var pt *T
+	TP(pt)
+	TV(*pt)
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -10,10 +10,10 @@
+
+ func _() {
+ 	var t T
+-	TP(&t)
+-	TV(t)
++	t.P()
++	t.V()
+
+ 	var pt *T
+-	TP(pt)
+-	TV(*pt)
++	pt.P()
++	pt.V()
+ }

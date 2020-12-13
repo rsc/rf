@@ -1,0 +1,99 @@
+ex {
+	var tt T
+	var pp *T
+
+	F(tt) -> TV(tt)
+	F(pp) -> TP(pp)
+
+	pp.P() -> TP(pp)
+	pp.V() -> TV(*pp)
+	tt.P() ->  TP(&tt)
+	tt.V() -> TV(tt)
+
+	pp.P1() -> pp.P2()
+	tt.V1() -> tt.V2()
+}
+-- x.go --
+package p
+
+type T int
+
+func F(interface{})
+
+func (t *T) P() {}
+func (t T) V()  {}
+
+func (t *T) P1() {}
+func (t T) V1()  {}
+
+func (t *T) P2() {}
+func (t T) V2()  {}
+
+func TP(t *T) {}
+func TV(t T)  {}
+
+func _() {
+	var t T
+
+	F(t)
+
+	t.P()
+
+	t.V()
+
+	t.P1()
+
+	t.V1()
+
+	var pt *T
+
+	F(pt)
+
+	pt.P()
+
+	pt.V()
+
+	pt.P1()
+
+	pt.V1()
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -19,25 +19,25 @@
+ func _() {
+ 	var t T
+
+-	F(t)
++	TV(t)
+
+-	t.P()
++	TP(&t)
+
+-	t.V()
++	TV(t)
+
+-	t.P1()
++	t.P2()
+
+-	t.V1()
++	t.V2()
+
+ 	var pt *T
+
+-	F(pt)
++	TP(pt)
+
+-	pt.P()
++	TP(pt)
+
+-	pt.V()
++	TV(*pt)
+
+-	pt.P1()
++	pt.P2()
+
+-	pt.V1()
++	pt.V2()
+ }
