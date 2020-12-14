@@ -1,0 +1,46 @@
+mv t.go m/q
+-- p.go --
+package p
+
+func _() {
+	var t T
+	t.M()
+}
+-- t.go --
+package p
+
+type T int
+
+func (t *T) M() {}
+-- stdout --
+diff old/p.go new/p.go
+--- old/p.go
++++ new/p.go
+@@ -1,6 +1,8 @@
+ package p
+
++import "m/q"
++
+ func _() {
+-	var t T
++	var t q.T
+ 	t.M()
+ }
+diff old/t.go new/t.go
+--- old/t.go
++++ new/t.go
+@@ -1,5 +0,0 @@
+-package p
+-
+-type T int
+-
+-func (t *T) M() {}
+diff old/q/t.go new/q/t.go
+--- old/q/t.go
++++ new/q/t.go
+@@ -0,0 +1,5 @@
++package q
++
++type T int
++
++func (t *T) M() {}

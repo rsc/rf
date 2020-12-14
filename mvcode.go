@@ -269,6 +269,9 @@ func rewritePkgRefs(snap *refactor.Snapshot, moves map[types.Object]*refactor.Pa
 				return
 			}
 			obj := pkg.TypesInfo.Uses[id]
+			if f, ok := obj.(*types.Func); ok && f.Type().(*types.Signature).Recv() != nil {
+				return
+			}
 			newPkg := moves[obj]
 			if newPkg == nil || newPkg.Types == obj.Pkg() {
 				return
