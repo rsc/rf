@@ -532,6 +532,11 @@ func (ex *exArgs) run() {
 					}
 
 					substText, target := m.applySubst(subst, stack)
+					if lit := m.compositeLitNeedsParen(subst, stack); lit != nil {
+						substText = "(" + substText
+						ex.snap.InsertAt(lit.End(), ")")
+					}
+
 					replaceMinimal(ex.snap, target.Pos(), target.End(), substText)
 
 					// We're done with this AST node.
@@ -650,6 +655,9 @@ func (m *matcher) applySubst(subst ast.Node, matchContext []ast.Node) (string, a
 					// TODO(mdempsky): Handle missing and renamed imports.
 					return pkg.Name()
 				})
+				if needParenType(typ, stack) {
+					repl = "(" + repl + ")"
+				}
 			default:
 				panic("unreachable")
 			}
@@ -737,6 +745,10 @@ func needParen(newX ast.Node, stack []ast.Node) bool {
 		*ast.ArrayType,
 		*ast.MapType:
 		return false // nothing can tear these apart
+	case *ast.ChanType:
+		if newX.Dir != ast.RECV {
+			return false
+		}
 	case *ast.BinaryExpr:
 		prec = newX.Op.Precedence()
 	case *ast.StarExpr, *ast.UnaryExpr:
@@ -750,8 +762,13 @@ func needParen(newX ast.Node, stack []ast.Node) bool {
 		return prec < outer.Op.Precedence()
 	case *ast.StarExpr, *ast.UnaryExpr:
 		return prec < token.UnaryPrec
-	case *ast.SelectorExpr, *ast.TypeAssertExpr:
+	case *ast.SelectorExpr:
 		return prec < token.HighestPrec
+	case *ast.TypeAssertExpr:
+		if inner == outer.X {
+			return prec < token.HighestPrec
+		}
+		return false
 	case *ast.KeyValueExpr, *ast.ParenExpr:
 		return false // arguments are safe
 	case *ast.CallExpr:
@@ -769,7 +786,96 @@ func needParen(newX ast.Node, stack []ast.Node) bool {
 			return prec < token.HighestPrec
 		}
 		return false // arguments are safe
+	case *ast.CompositeLit:
+		return false
+	case *ast.ArrayType, *ast.MapType:
+		return false
+	case *ast.ChanType:
+		if outer.Dir != ast.SEND|ast.RECV {
+			return false
+		}
+		_, need := newX.(*ast.ChanType)
+		return need
 	}
+}
+
+func needParenType(newT types.Type, stack []ast.Node) bool {
+	// Substituting "<-chan T" into "chan _" needs to become "chan
+	// (<-chan T)", otherwise it will be parsed as "chan<- (chan T)".
+	if ch1, ok := newT.(*types.Chan); ok && ch1.Dir() == types.RecvOnly {
+		if ch2, ok := stack[1].(*ast.ChanType); ok && ch2.Dir == ast.SEND|ast.RECV {
+			return true
+		}
+	}
+
+	return false
+}
+
+// compositeLitNeedsParen reports whether we're substituting an
+// identifier into the type of a composite literal expression, which
+// appears in an ambiguous context (i.e., between an "if", "for", or
+// "switch" keyword and the correspsonding open brace token).
+func (m *matcher) compositeLitNeedsParen(subst ast.Node, stack []ast.Node) *ast.CompositeLit {
+	if _, ok := subst.(*ast.Ident); !ok {
+		return nil
+	}
+
+	lit, ok := stack[1].(*ast.CompositeLit)
+	if !ok || lit.Type != stack[0] {
+		return nil
+	}
+
+	for i := 2; i < len(stack); i++ {
+		inner := stack[i-1]
+		switch outer := stack[i].(type) {
+		case *ast.IfStmt, *ast.ForStmt, *ast.SwitchStmt, *ast.TypeSwitchStmt:
+			return lit
+
+		// enclosed in parentheses
+		case *ast.ParenExpr:
+			return nil
+		case *ast.CallExpr:
+			for _, arg := range outer.Args {
+				if arg == inner {
+					return nil
+				}
+			}
+		case *ast.TypeAssertExpr:
+			if outer.Type == inner {
+				return nil
+			}
+
+		// enclosed in square brackets
+		case *ast.IndexExpr:
+			if outer.Index == inner {
+				return nil
+			}
+		case *ast.SliceExpr:
+			if outer.Low == inner || outer.High == inner || outer.Max == inner {
+				return nil
+			}
+		case *ast.ArrayType:
+			if outer.Len == inner {
+				return nil
+			}
+		case *ast.MapType:
+			if outer.Key == inner {
+				return nil
+			}
+
+		// enclosed in curly braces
+		case *ast.BlockStmt, *ast.StructType, *ast.InterfaceType:
+			return nil
+		case *ast.CompositeLit:
+			for _, elt := range outer.Elts {
+				if elt == inner {
+					return nil
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // importPath returns the unquoted import path of s,

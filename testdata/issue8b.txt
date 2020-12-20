@@ -1,0 +1,51 @@
+ex {
+	B  -> chan int
+	RO -> <-chan int
+	SO -> chan<- int
+}
+-- x.go --
+package m
+
+type B chan int
+type RO <-chan int
+type SO chan<- int
+
+var _ chan B
+var _ chan<- B
+var _ <-chan B
+
+var _ chan RO
+var _ chan<- RO
+var _ <-chan RO
+
+var _ chan SO
+var _ chan<- SO
+var _ <-chan SO
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -4,14 +4,14 @@
+ type RO <-chan int
+ type SO chan<- int
+
+-var _ chan B
+-var _ chan<- B
+-var _ <-chan B
++var _ chan chan int
++var _ chan<- chan int
++var _ <-chan chan int
+
+-var _ chan RO
+-var _ chan<- RO
+-var _ <-chan RO
++var _ chan (<-chan int)
++var _ chan<- <-chan int
++var _ <-chan <-chan int
+
+-var _ chan SO
+-var _ chan<- SO
+-var _ <-chan SO
++var _ chan chan<- int
++var _ chan<- chan<- int
++var _ <-chan chan<- int

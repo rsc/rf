@@ -1,0 +1,66 @@
+ex {
+  [2]int -> Ints
+}
+-- x.go --
+package m
+
+type Ints [2]int
+
+func f(i interface{}) {
+	if _ = [2]int{}; i == [2]int{} {
+	}
+	for _ = [2]int{}; i == [2]int{}; _ = [2]int{} {
+	}
+	switch _ = [2]int{}; [2]int{} {
+	}
+	switch _ = [2]int{}; i.(type) {
+	}
+
+	if i == ([2]int{}) {
+	}
+	if i == i.([2]int) {
+	}
+	if i == (interface{})([2]int{}) {
+	}
+	if i == [2]int{}[[2]int{}[0]] {
+	}
+	if i == &[2]int{} {
+	}
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -3,23 +3,23 @@
+ type Ints [2]int
+
+ func f(i interface{}) {
+-	if _ = [2]int{}; i == [2]int{} {
++	if _ = (Ints{}); i == (Ints{}) {
+ 	}
+-	for _ = [2]int{}; i == [2]int{}; _ = [2]int{} {
++	for _ = (Ints{}); i == (Ints{}); _ = (Ints{}) {
+ 	}
+-	switch _ = [2]int{}; [2]int{} {
++	switch _ = (Ints{}); (Ints{}) {
+ 	}
+-	switch _ = [2]int{}; i.(type) {
++	switch _ = (Ints{}); i.(type) {
+ 	}
+
+-	if i == ([2]int{}) {
++	if i == (Ints{}) {
+ 	}
+-	if i == i.([2]int) {
++	if i == i.(Ints) {
+ 	}
+-	if i == (interface{})([2]int{}) {
++	if i == (interface{})(Ints{}) {
+ 	}
+-	if i == [2]int{}[[2]int{}[0]] {
++	if i == (Ints{})[Ints{}[0]] {
+ 	}
+-	if i == &[2]int{} {
++	if i == &(Ints{}) {
+ 	}
+ }

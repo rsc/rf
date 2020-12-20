@@ -1,0 +1,81 @@
+ex {
+  T -> *T
+}
+-- x.go --
+package m
+
+type T struct{}
+
+var _ T
+
+var _ []T
+var _ = []T{}
+
+var _ [10]T
+var _ = [10]T{}
+
+var _ map[T]T
+var _ = map[T]T{}
+
+var _ chan T
+var _ = make(chan T)
+
+var _ = new(T)
+var _ *T
+
+var _ func(T, T) T
+
+func _(T, T) (T, T)
+
+var i interface{}
+var _ = i.(T)
+
+var _ interface{ T() T }
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,28 +2,28 @@
+
+ type T struct{}
+
+-var _ T
++var _ *T
+
+-var _ []T
+-var _ = []T{}
++var _ []*T
++var _ = []*T{}
+
+-var _ [10]T
+-var _ = [10]T{}
++var _ [10]*T
++var _ = [10]*T{}
+
+-var _ map[T]T
+-var _ = map[T]T{}
++var _ map[*T]*T
++var _ = map[*T]*T{}
+
+-var _ chan T
+-var _ = make(chan T)
++var _ chan *T
++var _ = make(chan *T)
+
+-var _ = new(T)
+-var _ *T
++var _ = new(*T)
++var _ **T
+
+-var _ func(T, T) T
++var _ func(*T, *T) *T
+
+-func _(T, T) (T, T)
++func _(*T, *T) (*T, *T)
+
+ var i interface{}
+-var _ = i.(T)
++var _ = i.(*T)
+
+-var _ interface{ T() T }
++var _ interface{ T() *T }
