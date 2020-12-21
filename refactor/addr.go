@@ -48,6 +48,7 @@ const (
 	ItemField
 	ItemMethod
 	ItemPos
+	ItemPkg
 )
 
 func (k ItemKind) String() string {
@@ -72,6 +73,8 @@ func (k ItemKind) String() string {
 		return "method"
 	case ItemPos:
 		return "text"
+	case ItemPkg:
+		return "pkg"
 	}
 	return "???"
 }
@@ -166,6 +169,10 @@ func (s *Snapshot) EvalNext(args string) (*Item, string, string) {
 
 			case ItemFile:
 				_, f := s.FileByName(item.Name)
+				if f == nil {
+					s.ErrorAt(token.NoPos, "cannot evaluate address %s: file not found: %s", addr, item.Name)
+					return item, "", ""
+				}
 				start, end = s.FileRange(f.Package)
 			}
 
@@ -212,22 +219,55 @@ func (s *Snapshot) EvalList(args string) ([]*Item, []string) {
 }
 
 func (s *Snapshot) Eval(expr string) *Item {
-	if expr == "." || strings.Contains(expr, "/") {
-		return &Item{Kind: ItemDir, Name: expr}
-	}
 	if strings.HasSuffix(expr, ".go") {
 		return &Item{Kind: ItemFile, Name: expr}
+	}
+	if expr == "." || strings.Contains(expr, "/") {
+		return &Item{Kind: ItemDir, Name: expr}
 	}
 
 	name, rest, more := cut(expr, ".")
 	item := evalScope(s.target.Types.Scope(), name)
 	item.Name = name
+	p := s.target
+	if item.Kind == ItemNotFound {
+		// Try for package name
+		for _, file := range s.target.Files {
+			if file.Syntax == nil {
+				continue
+			}
+			scope := s.target.TypesInfo.Scopes[file.Syntax]
+			if scope == nil {
+				panic("no file scope?")
+			}
+			pkg := evalScope(scope, name)
+			pkg.Name = name
+			if pkg.Kind == ItemPkg {
+				if !more {
+					fmt.Println("HAVE", pkg)
+					return pkg
+				}
+				name, rest, more = cut(rest, ".")
+				tpkg := pkg.Obj.(*types.PkgName).Imported()
+				for _, pp := range s.packages {
+					if pp.Types == tpkg {
+						p = pp
+						break
+					}
+				}
+				item = evalScope(tpkg.Scope(), name)
+				item.Outer = pkg
+				item.Name = pkg.Name + "." + name
+				break
+			}
+		}
+	}
 	if item.Kind == ItemNotFound {
 		return item
 	}
 	for more {
 		name, rest, more = cut(rest, ".")
-		item = evalPackage(s.target, item, name)
+		item = evalPackage(p, item, name)
 		if item.Kind == ItemNotFound {
 			return item
 		}
@@ -251,6 +291,8 @@ func evalScope(scope *types.Scope, expr string) *Item {
 		return &Item{Kind: ItemVar, Obj: obj}
 	case *types.Func:
 		return &Item{Kind: ItemFunc, Obj: obj}
+	case *types.PkgName:
+		return &Item{Kind: ItemPkg, Obj: obj}
 	}
 }
 
