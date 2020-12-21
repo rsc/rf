@@ -1,0 +1,31 @@
+# used to leave a blank line where "fmt" was
+rm F
+-- x.go --
+package p
+
+import (
+	"bytes"
+	"fmt"
+	"strings"
+)
+
+var _ bytes.Buffer
+var _ strings.Reader
+
+var F = fmt.Printf
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -2,11 +2,8 @@
+
+ import (
+ 	"bytes"
+-	"fmt"
+ 	"strings"
+ )
+
+ var _ bytes.Buffer
+ var _ strings.Reader
+-
+-var F = fmt.Printf

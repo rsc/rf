@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"sort"
@@ -18,7 +19,13 @@ import (
 	"strings"
 )
 
-func deleteUnusedImports(s *Snapshot, p *Package, file *ast.File) {
+func deleteUnusedImports(s *Snapshot, p *Package, text []byte) []byte {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "out.go", text, parser.ParseComments)
+	if err != nil {
+		return text
+	}
+
 	used := make(map[string]bool)
 	Walk(file, func(stack []ast.Node) {
 		if id, ok := stack[0].(*ast.Ident); ok && id.Obj == nil {
@@ -29,7 +36,7 @@ func deleteUnusedImports(s *Snapshot, p *Package, file *ast.File) {
 		}
 	})
 
-	deleteImports(s.fset, file, func(name, pkg string) bool {
+	match := func(name, pkg string) bool {
 		if name == "" {
 			p1 := s.pkgByID[s.importToID(p, pkg)]
 			if p1 == nil {
@@ -38,129 +45,100 @@ func deleteUnusedImports(s *Snapshot, p *Package, file *ast.File) {
 			name = p1.Name
 		}
 		return !used[name]
-	})
-}
+	}
 
-// deleteImports deletes all imports matching match.
-func deleteImports(fset *token.FileSet, f *ast.File, match func(name, path string) bool) {
-	var delspecs []*ast.ImportSpec
-	var delcomments []*ast.CommentGroup
-
-	// Find the import nodes that import path, if any.
-	for i := 0; i < len(f.Decls); i++ {
-		decl := f.Decls[i]
+	buf := NewBufferAt(s, 1, text)
+	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.IMPORT {
 			continue
 		}
-		for j := 0; j < len(gen.Specs); j++ {
-			spec := gen.Specs[j]
-			impspec := spec.(*ast.ImportSpec)
-			if !match(importName(impspec), importPath(impspec)) {
+
+		complete := true
+		any := false
+		for _, spec := range gen.Specs {
+			spec := spec.(*ast.ImportSpec)
+			if !match(importName(spec), importPath(spec)) {
+				complete = false
 				continue
 			}
-
-			// We found an import spec that imports path.
-			// Delete it.
-			delspecs = append(delspecs, impspec)
-			copy(gen.Specs[j:], gen.Specs[j+1:])
-			gen.Specs = gen.Specs[:len(gen.Specs)-1]
-
-			// If this was the last import spec in this decl,
-			// delete the decl, too.
-			if len(gen.Specs) == 0 {
-				copy(f.Decls[i:], f.Decls[i+1:])
-				f.Decls = f.Decls[:len(f.Decls)-1]
-				i--
-				break
-			} else if len(gen.Specs) == 1 {
-				if impspec.Doc != nil {
-					delcomments = append(delcomments, impspec.Doc)
-				}
-				if impspec.Comment != nil {
-					delcomments = append(delcomments, impspec.Comment)
-				}
-				for _, cg := range f.Comments {
-					// Found comment on the same line as the import spec.
-					if cg.End() < impspec.Pos() && fset.Position(cg.End()).Line == fset.Position(impspec.Pos()).Line {
-						delcomments = append(delcomments, cg)
-						break
-					}
-				}
-
-				spec := gen.Specs[0].(*ast.ImportSpec)
-
-				// Move the documentation right after the import decl.
-				if spec.Doc != nil {
-					for fset.Position(gen.TokPos).Line+1 < fset.Position(spec.Doc.Pos()).Line {
-						fset.File(gen.TokPos).MergeLine(fset.Position(gen.TokPos).Line)
-					}
-				}
-				for _, cg := range f.Comments {
-					if cg.End() < spec.Pos() && fset.Position(cg.End()).Line == fset.Position(spec.Pos()).Line {
-						for fset.Position(gen.TokPos).Line+1 < fset.Position(spec.Pos()).Line {
-							fset.File(gen.TokPos).MergeLine(fset.Position(gen.TokPos).Line)
-						}
-						break
-					}
-				}
-			}
-			if j > 0 {
-				lastImpspec := gen.Specs[j-1].(*ast.ImportSpec)
-				lastLine := fset.Position(lastImpspec.Path.ValuePos).Line
-				line := fset.Position(impspec.Path.ValuePos).Line
-
-				// We deleted an entry but now there may be
-				// a blank line-sized hole where the import was.
-				if line-lastLine > 1 || !gen.Rparen.IsValid() {
-					// There was a blank line immediately preceding the deleted import,
-					// so there's no need to close the hole. The right parenthesis is
-					// invalid after AddImport to an import statement without parenthesis.
-					// Do nothing.
-				} else if line != fset.File(gen.Rparen).LineCount() {
-					// There was no blank line. Close the hole.
-					fset.File(gen.Rparen).MergeLine(line)
-				}
-			}
-			j--
+			any = true
 		}
-	}
+		if complete {
+			buf.Delete(nodeRange(decl, text))
+			continue
+		}
+		if !any {
+			continue
+		}
 
-	// Delete imports from f.Imports.
-	for i := 0; i < len(f.Imports); i++ {
-		imp := f.Imports[i]
-		for j, del := range delspecs {
-			if imp == del {
-				copy(f.Imports[i:], f.Imports[i+1:])
-				f.Imports = f.Imports[:len(f.Imports)-1]
-				copy(delspecs[j:], delspecs[j+1:])
-				delspecs = delspecs[:len(delspecs)-1]
-				i--
-				break
+		for _, spec := range gen.Specs {
+			spec := spec.(*ast.ImportSpec)
+			if match(importName(spec), importPath(spec)) {
+				buf.Delete(nodeRange(spec, text))
 			}
 		}
 	}
+	return buf.Bytes()
+}
 
-	// Delete comments from f.Comments.
-	for i := 0; i < len(f.Comments); i++ {
-		cg := f.Comments[i]
-		for j, del := range delcomments {
-			if cg == del {
-				copy(f.Comments[i:], f.Comments[i+1:])
-				f.Comments = f.Comments[:len(f.Comments)-1]
-				copy(delcomments[j:], delcomments[j+1:])
-				delcomments = delcomments[:len(delcomments)-1]
-				i--
-				break
-			}
+var (
+	slashSlash = []byte("//")
+	starSlash  = []byte("*/")
+)
+
+func nodeRange(n ast.Node, text []byte) (pos, end token.Pos) {
+	startFile, endFile := token.Pos(1), token.Pos(1+len(text))
+
+	pos = n.Pos()
+	end = n.End()
+
+	// Include space and comments following the node.
+	for end < endFile && text[end-startFile] == ' ' {
+		end++
+	}
+	if bytes.HasPrefix(text[end-startFile:], slashSlash) {
+		i := bytes.IndexByte(text[end-startFile:], '\n')
+		if i >= 0 {
+			end += token.Pos(i)
+		} else {
+			end = endFile
 		}
 	}
-
-	if len(delspecs) > 0 {
-		panic(fmt.Sprintf("deleted specs from Decls but not Imports: %v", delspecs))
+	if end > n.End() && end < endFile && text[end-startFile] != '\n' {
+		// If we consumed spaces but did not reach a newline,
+		// put a space back to avoid joining tokens.
+		end--
 	}
 
-	return
+	// Include tabs preceding the node, to beginning of line.
+	// (If there are spaces before the node, it means something else
+	// precedes the node on the line, so don't bother removing anything.)
+	for pos > startFile && text[pos-startFile-1] == '\t' {
+		pos--
+	}
+
+	// Include comments "attached" to this node,
+	// but stopping at a blank line.
+	// Reading comments backward is a bit tricky:
+	// if we see a */, we need to stop and assume
+	// we don't know the state of the world.
+	for pos > startFile && text[pos-startFile-1] == '\n' {
+		i := bytes.LastIndexByte(text[:pos-startFile-1], '\n') + 1
+		line := text[i : pos-startFile]
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, slashSlash) || bytes.Contains(line, starSlash) {
+			break
+		}
+		pos = startFile + token.Pos(i)
+	}
+
+	// Consume final \n if we are deleting the whole line.
+	if (pos == startFile || text[pos-startFile-1] == '\n') && end < endFile && text[end-startFile] == '\n' {
+		end++
+	}
+
+	return pos, end
 }
 
 // importName returns the name of s,

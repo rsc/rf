@@ -390,12 +390,11 @@ func (s *Snapshot) Gofmt() {
 				continue
 			}
 			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, "out.go", ed.Buffer.Bytes(), parser.ParseComments)
+			text := deleteUnusedImports(s, p, ed.Buffer.Bytes())
+			file, err := parser.ParseFile(fset, "out.go", text, parser.ParseComments)
 			if err != nil {
 				continue
 			}
-			deleteUnusedImports(s, p, file)
-
 			var out bytes.Buffer
 			if err := format.Node(&out, fset, file); err != nil {
 				continue
