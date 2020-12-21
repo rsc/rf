@@ -105,6 +105,7 @@ func (g *DepsGraph) add(from, to QualName) {
 }
 
 func (s *Snapshot) addPkgDeps(g *DepsGraph, p *Package) {
+	initGen := 0
 	for _, file := range p.Files {
 		if file.Syntax == nil {
 			continue
@@ -146,6 +147,10 @@ func (s *Snapshot) addPkgDeps(g *DepsGraph, p *Package) {
 					g.add(QualName{p, name}, QualName{p, id.Name})
 				} else {
 					name = decl.Name.Name
+				}
+				if name == "init" {
+					initGen++
+					name = fmt.Sprintf("init(%d)", initGen)
 				}
 				s.addDeps(g, QualName{p, name}, p, decl.Type)
 				s.addDeps(g, QualName{p, name}, p, decl.Body)
