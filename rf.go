@@ -55,6 +55,7 @@ var cmds = map[string]func(*refactor.Snapshot, string){
 	"mv":         cmdMv,
 	"rm":         cmdRm,
 	"typeassert": cmdTypeAssert,
+	"inject":     cmdInject,
 }
 
 type loader interface {

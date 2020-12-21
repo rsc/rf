@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"go/types"
 	"sort"
+	"strings"
 )
 
 // A QualName is a qualified name: a name and its package path.
@@ -19,7 +20,69 @@ type QualName struct {
 	Name string
 }
 
+func (q QualName) Object() types.Object {
+	if i := strings.Index(q.Name, "."); i >= 0 {
+		typ := q.Pkg.Types.Scope().Lookup(q.Name[:i])
+		if tn, ok := typ.(*types.TypeName); ok {
+			named := tn.Type().(*types.Named)
+			for j := 0; j < named.NumMethods(); j++ {
+				if named.Method(j).Name() == q.Name[i+1:] {
+					return named.Method(j)
+				}
+			}
+		}
+		return nil
+	}
+	return q.Pkg.Types.Scope().Lookup(q.Name)
+}
+
+func (s *Snapshot) QualNameOf(obj types.Object) QualName {
+	if obj == nil {
+		return QualName{}
+	}
+	pkg := obj.Pkg()
+	if pkg == nil {
+		return QualName{}
+	}
+
+	var name string
+	switch obj := obj.(type) {
+	case *types.PkgName:
+		return QualName{}
+	case *types.Func:
+		if v := obj.Type().(*types.Signature).Recv(); v != nil {
+			rtyp := v.Type()
+			if ptr, ok := rtyp.(*types.Pointer); ok {
+				rtyp = ptr.Elem()
+			}
+			if _, ok := rtyp.Underlying().(*types.Interface); ok {
+				// Skip interface methods.
+				return QualName{}
+			}
+			switch rtyp := rtyp.(type) {
+			case *types.Named:
+				name = rtyp.Obj().Name() + "." + obj.Name()
+			}
+		}
+	}
+	if name == "" {
+		if obj.Parent() != pkg.Scope() {
+			return QualName{}
+		}
+		name = obj.Name()
+	}
+	for _, pp := range s.packages {
+		if pp.Types == pkg {
+			return QualName{pp, name}
+		}
+	}
+	return QualName{}
+}
+
 func (q QualName) String() string {
+	if q.Pkg == nil {
+		return "<q>"
+	}
 	return q.Pkg.PkgPath + "." + q.Name
 }
 
@@ -53,6 +116,23 @@ func (g *DepsGraph) Map(remap map[QualName]QualName) *DepsGraph {
 						q2 = q
 					}
 					ng.add(q1, q2)
+				}
+			}
+		}
+	}
+	return ng
+}
+
+func (g *DepsGraph) Reverse() *DepsGraph {
+	ng := new(DepsGraph)
+	ng.Level = g.Level
+	for p1, m := range g.G {
+		for name1, m := range m {
+			q1 := QualName{p1, name1}
+			for p2, m := range m {
+				for name2 := range m {
+					q2 := QualName{p2, name2}
+					ng.add(q2, q1)
 				}
 			}
 		}
@@ -169,25 +249,8 @@ func (s *Snapshot) addDeps(g *DepsGraph, from QualName, p *Package, n ast.Node) 
 	Walk(n, func(stack []ast.Node) {
 		switch n := stack[0].(type) {
 		case *ast.Ident:
-			obj := p.TypesInfo.Uses[n]
-			if obj == nil {
-				return
-			}
-			tpkg := obj.Pkg()
-			if tpkg == nil {
-				return
-			}
-			if _, ok := obj.(*types.PkgName); ok {
-				return
-			}
-			if obj.Parent() != tpkg.Scope() {
-				return
-			}
-			for _, pp := range s.packages {
-				if pp.Types == tpkg {
-					g.add(from, QualName{pp, obj.Name()})
-					break
-				}
+			if to := s.QualNameOf(p.TypesInfo.Uses[n]); to != (QualName{}) {
+				g.add(from, to)
 			}
 		}
 	})

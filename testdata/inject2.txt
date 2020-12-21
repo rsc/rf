@@ -1,0 +1,46 @@
+inject q.G f
+-- x.go --
+package p
+
+import "m/q"
+
+type T struct{}
+
+func f() { g() }
+func g() { g2(1) }
+func g2(g int) { h(g) }
+func h(i int) { var t T; t.j(i+1) }
+func (t T) j(k int) { m(k+q.G) }
+func m(l int) { println(2*q.G+l) }
+func z() { h(2) }
+func y() {}
+
+-- q/q.go --
+package q
+
+var G int
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -4,12 +4,11 @@
+
+ type T struct{}
+
+-func f() { g() }
+-func g() { g2(1) }
+-func g2(g int) { h(g) }
+-func h(i int) { var t T; t.j(i+1) }
+-func (t T) j(k int) { m(k+q.G) }
+-func m(l int) { println(2*q.G+l) }
+-func z() { h(2) }
+-func y() {}
+-
++func f()                   { g(q.G) }
++func g(g int)              { g2(g, 1) }
++func g2(g_ int, g int)     { h(g_, g) }
++func h(g int, i int)       { var t T; t.j(g, i+1) }
++func (t T) j(g int, k int) { m(g, k+g) }
++func m(g int, l int)       { println(2*g + l) }
++func z()                   { h(q.G, 2) }
++func y()                   {}
