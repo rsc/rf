@@ -17,3 +17,4 @@ func F(int) {
 x.go:8:1: multiple control flow exits from moved code:
 	x.go:9:4: return
 	x.go:11:1: implicit break
+ERROR: errors found during: mv F:/BEGIN/+0,/END/-0 New

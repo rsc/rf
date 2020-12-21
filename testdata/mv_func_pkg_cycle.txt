@@ -23,3 +23,4 @@ mv ... m/q: import cycle: m -> m/q -> m
 	p._ -> q.X
 	# m/q
 	q.X -> p.Y
+ERROR: errors found during: mv X m/q

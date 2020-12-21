@@ -5,3 +5,4 @@ var X = 1
 var V struct{}
 -- stderr --
 x.go:2:5: removing declaration would drop initializer
+ERROR: errors found during: mv X V.F

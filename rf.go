@@ -130,10 +130,13 @@ func run(rf *refactor.Refactor, script string) error {
 
 		fn(snap, args)
 		if snap.Errors() > 0 {
-			return err
+			return fmt.Errorf("errors found during: %s", lastCmd)
 		}
 
 		snap.Gofmt()
+		if snap.Errors() > 0 {
+			return fmt.Errorf("errors found during gofmt after: %s", lastCmd)
+		}
 		base = snap
 	}
 
@@ -153,8 +156,12 @@ func run(rf *refactor.Refactor, script string) error {
 
 	// Reload packages one last time before writing,
 	// to make sure the rewrites are valid.
-	if _, err := snap.Load(); err != nil {
+	newSnap, err := snap.Load()
+	if err != nil {
 		return fmt.Errorf("checking rewritten packages: %v", err)
+	}
+	if newSnap.Errors() > 0 {
+		return fmt.Errorf("errors found after script")
 	}
 
 	if rf.ShowDiff {

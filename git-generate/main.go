@@ -153,12 +153,12 @@ func main() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Dir = gitdir
-	err = cmd.Run()
+	runErr := cmd.Run()
 	os.Remove(f.Name())
-	if err != nil {
-		log.Fatalf("executing script: %v", err)
-	}
 
+	// Run the git add before reporting the error,
+	// so that a later "git reset --hard HEAD" knows
+	// which new files to remove.
 	addCmd := []string{"add", "-N"}
 	walkGit(gitdir, func(path string) {
 		if !have[path] {
@@ -169,6 +169,10 @@ func main() {
 		gitDir(gitdir, addCmd...)
 	}
 	git("add", "-u")
+
+	if runErr != nil {
+		log.Fatalf("executing script: %v", runErr)
+	}
 }
 
 func readScript(msg, prefix string) []string {
