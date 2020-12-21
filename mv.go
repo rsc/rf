@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -205,7 +206,7 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 			}
 
 			if newItem.Kind == refactor.ItemNotFound {
-				addStructField(snap, structPos, newName, old.Obj.Type().String())
+				addStructField(snap, tvar.Pos(), structPos, newName, old.Obj.Type())
 			}
 			removeDecl(snap, old)
 			rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
@@ -338,7 +339,7 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 	snap.ErrorAt(old.Obj.Pos(), "could not find declaration for %v to delete", old.Name)
 }
 
-func addStructField(snap *refactor.Snapshot, structPos token.Pos, name string, typ string) {
+func addStructField(snap *refactor.Snapshot, oldPos, structPos token.Pos, name string, typ types.Type) {
 	stack := snap.SyntaxAt(structPos)
 
 	var xtyp ast.Expr
@@ -373,7 +374,9 @@ Loop:
 		len(fields.List) > 0 && line(fields.List[len(fields.List)-1].End()) == line(fields.Closing) {
 		snap.InsertAt(fields.Closing, "\n")
 	}
-	snap.InsertAt(fields.Closing, name+" "+typ+"\n")
+	var buf bytes.Buffer
+	printType(&buf, snap, oldPos, structPos, typ)
+	snap.InsertAt(fields.Closing, name+" "+buf.String()+"\n")
 }
 
 func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
