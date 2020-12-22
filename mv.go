@@ -135,6 +135,15 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 
 	old, newItem := items[0], items[1]
 
+	if old.Kind == refactor.ItemPos && newItem.Kind == refactor.ItemPos {
+		// Text move.
+		text := snap.Text(old.Pos, old.End)
+		snap.DeleteAt(old.Pos, old.End)
+		snap.DeleteAt(newItem.Pos, newItem.End)
+		snap.InsertAt(newItem.End, string(text))
+		return
+	}
+
 	var newOuter *refactor.Item
 	newPath := newItem.Name
 	newPrefix, newName, ok := cutLast(newPath, ".")
@@ -205,10 +214,10 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 				structPos = typ.Obj().Pos()
 			}
 
+			doc := removeDecl(snap, old)
 			if newItem.Kind == refactor.ItemNotFound {
-				addStructField(snap, tvar.Pos(), structPos, newName, old.Obj.Type())
+				addStructField(snap, doc, tvar.Pos(), structPos, newName, old.Obj.Type())
 			}
-			removeDecl(snap, old)
 			rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
 			return
 		}
@@ -311,8 +320,9 @@ func StackTypes(list []ast.Node) string {
 	return fmt.Sprint(types)
 }
 
-// TODO: Return doc comments.
-func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
+// removeDecl removes the declaration of old,
+// returning its former doc comments.
+func removeDecl(snap *refactor.Snapshot, old *refactor.Item) string {
 	stack := snap.SyntaxAt(old.Obj.Pos())
 	// stack is *ast.Ident *ast.ValueSpec *ast.GenDecl
 	// or maybe *ast.Ident *ast.AssignStmt
@@ -321,25 +331,36 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) {
 		spec := stack[1].(*ast.ValueSpec)
 		if len(spec.Values) > 0 {
 			snap.ErrorAt(spec.Pos(), "removing declaration would drop initializer")
-			return
+			return ""
+		}
+		decl := stack[2].(*ast.GenDecl)
+		var docPos, docEnd token.Pos
+		if len(decl.Specs) == 1 {
+			docPos, _ = nodeRange(snap, decl)
+			docEnd = decl.Pos()
+		} else {
+			docPos, _ = nodeRange(snap, spec)
+			docEnd = spec.Pos()
 		}
 		removeDecls(snap, map[types.Object]bool{old.Obj: true})
-		return
+		return string(snap.Text(docPos, docEnd))
 
 	case *ast.AssignStmt:
 		as := stack[1].(*ast.AssignStmt)
 		if len(as.Lhs) > 1 {
 			snap.ErrorAt(as.Pos(), "multiple decl not implemented")
-			return
+			return ""
 		}
+		docPos, _ := nodeRange(snap, stack[1])
 		snap.DeleteAt(as.TokPos, as.TokPos+1) // delete colon
-		return
+		return string(snap.Text(docPos, as.Pos()))
 	}
 
 	snap.ErrorAt(old.Obj.Pos(), "could not find declaration for %v to delete", old.Name)
+	return ""
 }
 
-func addStructField(snap *refactor.Snapshot, oldPos, structPos token.Pos, name string, typ types.Type) {
+func addStructField(snap *refactor.Snapshot, doc string, oldPos, structPos token.Pos, name string, typ types.Type) {
 	stack := snap.SyntaxAt(structPos)
 
 	var xtyp ast.Expr
@@ -376,7 +397,7 @@ Loop:
 	}
 	var buf bytes.Buffer
 	printType(&buf, snap, oldPos, structPos, typ)
-	snap.InsertAt(fields.Closing, name+" "+buf.String()+"\n")
+	snap.InsertAt(fields.Closing, doc+name+" "+buf.String()+"\n")
 }
 
 func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {

@@ -225,7 +225,7 @@ func (s *Snapshot) addImports() {
 func (s *Snapshot) addImportList(file string, list []NewImport) {
 	_, f := s.FileByName(file)
 	if f == nil {
-		panic(file)
+		return
 	}
 	imps := f.Decls
 	for i, d := range f.Decls {
