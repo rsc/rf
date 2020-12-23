@@ -64,6 +64,7 @@ func cmdAddSub(snap *refactor.Snapshot, cmd, args string) {
 			}
 		}
 		if dstPkg == nil {
+			snap.ErrorAt(token.NoPos, "no such directory %s", item.Name)
 			return
 		}
 		pos, end = snap.FileRange(dstPkg.Files[0].Syntax.Pos())

@@ -421,6 +421,7 @@ func addrToByteRange(addr string, start int, data []byte) (lo, hi int, err error
 			}
 			pattern := addr[1:i]
 			lo, hi, err = addrRegexp(data, lo, hi, dir, pattern)
+			dir = 0
 			prevc = c
 			addr = addr[j:]
 			continue

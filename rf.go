@@ -213,6 +213,12 @@ func readLine(text string) (line, rest string, err error) {
 			}
 
 		case regexp && c == '/':
+			if i+2 < len(text) && (text[i+1] == '+' || text[i+1] == '-' || text[i+1] == ',') && text[i+2] == '/' {
+				// regexp stays true
+				i += 2
+				regexpText = text[i:]
+				continue
+			}
 			regexp = false
 
 		case c == '\\' && (quote == '\'' || quote == '"' || regexp):
@@ -237,6 +243,7 @@ func readLine(text string) (line, rest string, err error) {
 				keep.WriteString(text[start:i])
 				start = j
 				i = j - 1
+				continue
 			}
 
 		case c == '\n' && len(punct) == 0:

@@ -72,6 +72,8 @@ var addrToByteRangeTests = []struct {
 	{0, "/90/+0", 45, 45},
 	{0, "/90/+0-", 40, 45},
 	{0, "/90/+-", 40, 45},
+
+	{0, "/^3/+/0/", 13, 14},
 }
 
 func TestAddrToByteRange(t *testing.T) {
