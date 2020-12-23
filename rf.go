@@ -48,6 +48,7 @@ func main() {
 
 var cmds = map[string]func(*refactor.Snapshot, string){
 	"add":        cmdAdd,
+	"sub":        cmdSub,
 	"debug":      cmdDebug,
 	"inline":     cmdInline,
 	"key":        cmdKey,

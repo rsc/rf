@@ -7,14 +7,23 @@ package main
 import (
 	"go/ast"
 	"go/token"
+	"strings"
 
 	"rsc.io/rf/refactor"
 )
 
 func cmdAdd(snap *refactor.Snapshot, args string) {
+	cmdAddSub(snap, "add", args)
+}
+
+func cmdSub(snap *refactor.Snapshot, args string) {
+	cmdAddSub(snap, "sub", args)
+}
+
+func cmdAddSub(snap *refactor.Snapshot, cmd, args string) {
 	item, expr, text := snap.EvalNext(args)
 	if expr == "" {
-		snap.ErrorAt(token.NoPos, "usage: add address text...\n")
+		snap.ErrorAt(token.NoPos, "usage: %s address text...\n", cmd)
 		return
 	}
 	if item == nil {
@@ -22,10 +31,10 @@ func cmdAdd(snap *refactor.Snapshot, args string) {
 		return
 	}
 
-	var pos token.Pos
+	var pos, end token.Pos
 	switch item.Kind {
 	default:
-		snap.ErrorAt(token.NoPos, "TODO: add after %s", item.Kind)
+		snap.ErrorAt(token.NoPos, "TODO: %s after %s", cmd, item.Kind)
 
 	case refactor.ItemConst, refactor.ItemFunc, refactor.ItemType, refactor.ItemVar, refactor.ItemField:
 		stack := snap.SyntaxAt(item.Obj.Pos())
@@ -40,11 +49,11 @@ func cmdAdd(snap *refactor.Snapshot, args string) {
 				after = decl
 			}
 		}
-		_, pos = nodeRange(snap, after)
+		pos, end = nodeRange(snap, after)
 
 	case refactor.ItemFile:
 		_, srcFile := snap.FileByName(item.Name)
-		_, pos = snap.FileRange(srcFile.Package)
+		pos, end = snap.FileRange(srcFile.Package)
 
 	case refactor.ItemDir:
 		var dstPkg *refactor.Package
@@ -57,12 +66,20 @@ func cmdAdd(snap *refactor.Snapshot, args string) {
 		if dstPkg == nil {
 			return
 		}
-		_, pos = snap.FileRange(dstPkg.Files[0].Syntax.Pos())
+		pos, end = snap.FileRange(dstPkg.Files[0].Syntax.Pos())
 
 	case refactor.ItemPos:
-		pos = item.End
+		pos, end = item.Pos, item.End
 	}
 
-	// TODO: Is final \n a good idea?
-	snap.InsertAt(pos, text+"\n")
+	var old string
+	if cmd == "sub" {
+		old = string(snap.Text(pos, end))
+		snap.DeleteAt(pos, end)
+	}
+	if cmd == "add" || strings.HasSuffix(old, "\n") {
+		// TODO: Is final \n a good idea?
+		text += "\n"
+	}
+	snap.InsertAt(end, text)
 }

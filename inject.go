@@ -64,7 +64,7 @@ func cmdInject(snap *refactor.Snapshot, args string) {
 	add = func(q refactor.QualName) {
 		obj := q.Object()
 		if obj == nil {
-			panic("lost obj")
+			panic("lost obj: " + q.String())
 		}
 		if converting[obj] != "" || !usesVar[obj] {
 			return
@@ -84,7 +84,7 @@ func cmdInject(snap *refactor.Snapshot, args string) {
 	roots := make(map[types.Object]bool)
 	for _, item := range items[1:] {
 		roots[item.Obj] = true
-		q := refactor.QualName{Pkg: snap.Target(), Name: item.Name}
+		q := snap.QualNameOf(item.Obj)
 		add(q)
 	}
 	for obj := range roots {

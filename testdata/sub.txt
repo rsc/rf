@@ -1,0 +1,49 @@
+sub T.X Y int `tag`
+sub C var D = 1
+sub T1 type T1 = int
+sub T3 \ # comment
+	type T2 = T
+sub x.go:/var/ var /* hello */
+sub x.go:$ // EOF
+sub T:$ Z int
+sub V:$ U int
+-- x.go --
+package p
+
+const C = 1
+
+type T struct {
+	X int
+}
+
+type T1 = float64
+
+var T3 int
+
+var V struct {}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,13 +1,16 @@
+ package p
+
+-const C = 1
++var /* hello */ D = 1
+
+ type T struct {
+-	X int
++	Y int `tag`
++	Z int
+ }
+
+-type T1 = float64
++type T1 = int
+
+-var T3 int
++type T2 = T
+
+-var V struct {}
++var V struct{ U int }
++
++// EOF
