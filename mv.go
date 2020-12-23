@@ -12,6 +12,7 @@ import (
 	"go/types"
 	"path"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"rsc.io/rf/refactor"
@@ -276,6 +277,25 @@ func rewriteDefn(snap *refactor.Snapshot, old *refactor.Item, new string) {
 		}
 		snap.ErrorAt(old.Obj.Pos(), "did not find definition - %v", types)
 		return
+	}
+	outer := stack[1]
+	switch outer.(type) {
+	default:
+		panic(refactor.StackTypes(stack))
+	case *ast.FuncDecl, *ast.Field:
+		// ok
+	case *ast.ValueSpec, *ast.TypeSpec:
+		decl := stack[2].(*ast.GenDecl)
+		if decl.Lparen == token.NoPos {
+			outer = decl
+		}
+	}
+
+	docPos, _ := nodeRange(snap, outer)
+	docEnd := outer.Pos()
+	text := snap.Text(docPos, docEnd)
+	for _, m := range regexp.MustCompile(`\b`+regexp.QuoteMeta(old.Obj.Name())+`\b`).FindAllIndex(text, -1) {
+		snap.ReplaceAt(docPos+token.Pos(m[0]), docPos+token.Pos(m[1]), new)
 	}
 	snap.ReplaceNode(id, new)
 }

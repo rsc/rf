@@ -1,0 +1,41 @@
+mv A A1
+mv B B1
+mv C C1
+-- x.go --
+package p
+
+// A is the best function. And really awesome.
+func A() { }
+
+// B is OK.
+var B = 2
+
+var (
+	// C needs help.
+	C = 2
+)
+
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,13 +1,12 @@
+ package p
+
+-// A is the best function. And really awesome.
+-func A() { }
++// A1 is the best function. And really awesome.
++func A1() {}
+
+-// B is OK.
+-var B = 2
++// B1 is OK.
++var B1 = 2
+
+ var (
+-	// C needs help.
+-	C = 2
++	// C1 needs help.
++	C1 = 2
+ )
+-
