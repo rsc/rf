@@ -109,6 +109,8 @@
 //	F:/fmt.Sprint.*/          # (same)
 //	T.M:/fmt.*/               # the fmt.Sprint call in T.M
 //
+// See http://9p.io/sys/doc/sam/sam.html Table II for details on the syntax.
+//
 // The add command
 //
 // The add command adds text to the source code. It takes as an argument the
