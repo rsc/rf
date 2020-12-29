@@ -326,15 +326,10 @@ func (ex *exArgs) check() error {
 					switch n := n.(type) {
 					default:
 						return fmt.Errorf("cannot %s %T", kw, n)
-
 					case *ast.Ident:
 						obj = info.Uses[n]
-
 					case *ast.SelectorExpr:
-						sel := info.Selections[n]
-						if sel != nil {
-							obj = sel.Obj()
-						}
+						obj = info.Uses[n.Sel]
 					}
 					if obj == nil {
 						return fmt.Errorf("cannot find %s %v", kw, astString(snap.Fset(), n))
