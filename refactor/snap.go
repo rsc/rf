@@ -33,6 +33,7 @@ type Snapshot struct {
 	pkgByID  map[string]*Package
 	edits    map[string]*Edit
 	files    map[string]*File
+	tcErrs   []types.Error
 
 	r      *Refactor
 	cache  *buildCache
@@ -134,6 +135,42 @@ func (s *Snapshot) saveErrors(err error) {
 		return
 	}
 	s.ErrorAt(token.NoPos, "%v", err)
+}
+
+func (s *Snapshot) typecheckError(err error) {
+	switch err := err.(type) {
+	case scanner.ErrorList:
+		for _, e := range err {
+			s.typecheckError(e)
+		}
+
+	case types.Error:
+		s.tcErrs = append(s.tcErrs, err)
+
+	default:
+		panic(fmt.Sprintf("typecheck %T", err))
+		s.saveErrors(err)
+	}
+}
+
+func (s *Snapshot) flushTypecheckErrors() {
+	count := make(map[string]int)
+	for _, e := range s.tcErrs {
+		count[e.Msg]++
+	}
+
+	for _, e := range s.tcErrs {
+		switch {
+		case count[e.Msg] > 3:
+			n := count[e.Msg]
+			count[e.Msg] = -1
+			e.Msg += fmt.Sprintf(" [× %d]", n)
+
+		case count[e.Msg] < 0:
+			continue
+		}
+		s.saveErrors(e)
+	}
 }
 
 func (s *Snapshot) Fset() *token.FileSet { return s.fset }
@@ -540,6 +577,9 @@ func (s *Snapshot) typeCheck() {
 			}
 		}
 	}
+
+	s.flushTypecheckErrors()
+
 	if len(waiting) > 0 && s.Errors() == 0 {
 		fmt.Println("type check stalled:")
 		for p, n := range waiting {
@@ -608,7 +648,7 @@ func (s *Snapshot) check(p *Package) {
 	}
 
 	conf := &types.Config{
-		Error:    func(err error) { s.saveErrors(err) }, // do not die on first error
+		Error:    s.typecheckError,
 		Importer: &snapImporter{s, p},
 		Sizes:    s.sizes,
 	}
