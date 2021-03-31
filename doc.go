@@ -44,7 +44,10 @@
 //
 //	package p
 //
-//	import "fmt"
+//	import (
+//		"fmt"
+//		"io"
+//	)
 //
 //	const (
 //		C = iota
