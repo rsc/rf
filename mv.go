@@ -181,7 +181,7 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 		return
 	}
 
-	// Rename of struct field or method.
+	// Rename of local variable, struct field, or method.
 	if old.Outer != nil && newOuter != nil && old.Outer.Obj == newOuter.Obj {
 		if newItem.Kind != refactor.ItemNotFound { // TODO
 			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
@@ -282,7 +282,7 @@ func rewriteDefn(snap *refactor.Snapshot, old *refactor.Item, new string) {
 	switch outer.(type) {
 	default:
 		panic(refactor.StackTypes(stack))
-	case *ast.FuncDecl, *ast.Field:
+	case *ast.FuncDecl, *ast.Field, *ast.AssignStmt:
 		// ok
 	case *ast.ValueSpec, *ast.TypeSpec:
 		decl := stack[2].(*ast.GenDecl)
@@ -306,7 +306,7 @@ func rewriteUses(snap *refactor.Snapshot, old *refactor.Item, new string, checkP
 			id, ok := stack[0].(*ast.Ident)
 			if !ok || pkg.TypesInfo.Uses[id] != old.Obj {
 				if len(stack) > 2 {
-					if _, ok := stack[1].(*ast.AssignStmt); ok && pkg.TypesInfo.Defs[id] == old.Obj {
+					if as, ok := stack[1].(*ast.AssignStmt); ok && pkg.TypesInfo.Defs[id] == old.Obj && as.Tok != token.DEFINE {
 						goto OK
 					}
 				}
@@ -372,7 +372,10 @@ func removeDecl(snap *refactor.Snapshot, old *refactor.Item) string {
 			return ""
 		}
 		docPos, _ := nodeRange(snap, stack[1])
-		snap.DeleteAt(as.TokPos, as.TokPos+1) // delete colon
+		// Delete colon and update as so other users can tell this is
+		// no longer a declaration.
+		snap.DeleteAt(as.TokPos, as.TokPos+1)
+		as.Tok = token.ASSIGN
 		return string(snap.Text(docPos, as.Pos()))
 	}
 

@@ -1,0 +1,21 @@
+mv F.x F.y
+-- x.go --
+package m
+
+func F() {
+	var x int = 123
+	_ = x
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,6 +1,6 @@
+ package m
+
+ func F() {
+-	var x int = 123
+-	_ = x
++	var y int = 123
++	_ = y
+ }
