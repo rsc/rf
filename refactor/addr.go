@@ -313,7 +313,7 @@ func evalPackage(p *Package, outer *Item, name string) *Item {
 		case *types.Struct, *types.Interface:
 			return lookupTypeX(p, outer, typ, name)
 		}
-	case ItemFunc:
+	case ItemFunc, ItemMethod:
 		// Look for declaration inside function.
 		item := evalScope(outer.Obj.(*types.Func).Scope(), name)
 		item.Outer = outer
