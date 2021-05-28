@@ -37,12 +37,15 @@ func deleteUnusedImports(s *Snapshot, p *Package, text []byte) []byte {
 	})
 
 	match := func(name, pkg string) bool {
-		if name == "" {
+		switch name {
+		case "":
 			p1 := s.pkgByID[s.importToID(p, pkg)]
 			if p1 == nil {
 				panic("NO IMPORT: " + pkg)
 			}
 			name = p1.Name
+		case "_":
+			return false
 		}
 		return !used[name]
 	}

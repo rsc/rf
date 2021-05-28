@@ -2,7 +2,9 @@ mv T X m/q
 -- x.go --
 package p
 
-import _ "m/q"
+import (
+	_ "m/q"
+)
 
 type T int
 
@@ -13,10 +15,10 @@ package q
 diff old/x.go new/x.go
 --- old/x.go
 +++ new/x.go
-@@ -1,7 +1 @@
- package p
--
--import _ "m/q"
+@@ -3,7 +3,3 @@
+ import (
+ 	_ "m/q"
+ )
 -
 -type T int
 -
