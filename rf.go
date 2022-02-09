@@ -54,6 +54,7 @@ var cmds = map[string]func(*refactor.Snapshot, string){
 	"key":        cmdKey,
 	"ex":         cmdEx,
 	"mv":         cmdMv,
+	"export":     cmdExport,
 	"rm":         cmdRm,
 	"typeassert": cmdTypeAssert,
 	"inject":     cmdInject,

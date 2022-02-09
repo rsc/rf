@@ -204,7 +204,7 @@
 //
 // The mv command moves and renames code.
 //
-//	mv [-f] old... new
+//	mv old... new
 //
 // When mv moves or renames old code, it also updates any references
 // to use the new names or locations for the code.
@@ -348,6 +348,22 @@
 //
 // If the destination is a file or package, multiple sources can be listed.
 // The mv command moves each source item in turn to the destination.
+//
+// The export command
+//
+// The export command is a specialised form of mv that
+// exports symbols by capitalizing their first letter,
+// first stripping any leading underscore characters.
+//
+// 	export old...
+//
+// For example:
+//
+// 	export foo		# constant; renamed to Foo
+// 	export ty		# type; renamed to Ty
+// 	export foo.bar	# struct field, renamed to foo.Bar.
+// 	export f		# function; renamed to F
+// 	export _f		# function; renamed to F
 //
 // The rm command
 //
