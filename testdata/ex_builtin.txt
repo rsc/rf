@@ -1,0 +1,46 @@
+# Test rewriting to built-ins (universe and otherwise)
+ex {
+	var s []int
+	myLen(s) -> len(s)
+}
+ex {
+	import "unsafe"
+	var x int
+	mySizeof(x) -> unsafe.Sizeof(x)
+}
+-- x.go --
+package p
+
+import _ "unsafe"
+
+func myLen(x []int) int {
+	return len(x)
+}
+func mySizeof(x int) int {
+	return 42
+}
+func main() {
+	_ = myLen([]int{1,2,3})
+	_ = mySizeof(1)
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,6 +1,6 @@
+ package p
+
+-import _ "unsafe"
++import "unsafe"
+
+ func myLen(x []int) int {
+ 	return len(x)
+@@ -9,6 +9,6 @@
+ 	return 42
+ }
+ func main() {
+-	_ = myLen([]int{1,2,3})
+-	_ = mySizeof(1)
++	_ = len([]int{1, 2, 3})
++	_ = unsafe.Sizeof(1)
+ }

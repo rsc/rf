@@ -420,12 +420,20 @@ func avoidOf(snap *refactor.Snapshot, avoids []types.Object, substInfo *types.In
 			if !ok {
 				return
 			}
-			if obj := substInfo.Uses[id]; obj != nil && obj.Parent() != types.Universe {
+			// Definitions from the universe and built-ins don't have a
+			// position, but there's also no chance of walking into them so
+			// there's nothing to avoid.
+			if obj := substInfo.Uses[id]; obj != nil && obj.Parent() != types.Universe && !isBuiltin(obj) {
 				avoidObj(obj)
 			}
 		})
 	}
 	return avoid
+}
+
+func isBuiltin(obj types.Object) bool {
+	_, isBuiltin := obj.(*types.Builtin)
+	return isBuiltin
 }
 
 func (ex *exArgs) run() {
