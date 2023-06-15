@@ -274,7 +274,8 @@ func (ex *exArgs) check() error {
 			if strings.HasSuffix(err.Error(), " is not used") {
 				return
 			}
-			if strings.HasSuffix(err.Error(), " declared but not used") {
+			if strings.HasSuffix(err.Error(), " declared but not used") ||
+				strings.HasSuffix(err.Error(), " declared and not used") {
 				return
 			}
 			if strings.HasSuffix(err.Error(), " (type) is not an expression") {

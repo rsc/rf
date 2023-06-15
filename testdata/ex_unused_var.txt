@@ -1,5 +1,3 @@
-ex {
-  var s string
-}
+ex { var s string }
 -- x.go --
 package m
