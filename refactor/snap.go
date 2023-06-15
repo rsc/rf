@@ -220,6 +220,7 @@ func (r *Refactor) Load() (*Snapshot, error) {
 		return nil, fmt.Errorf("loading module: %v\n%s", err, bmod)
 	}
 	r.modPath = m.Module.Path
+	isStd := r.modPath == "std" || r.modPath == "cmd"
 
 	cmd = exec.Command("go", "list", "-e", "-json", "-compiled", "-export", "-test", "-deps", "./...")
 	cmd.Dir = r.modRoot
@@ -289,7 +290,14 @@ func (r *Refactor) Load() (*Snapshot, error) {
 		if p.Dir == dir && !strings.HasSuffix(p.PkgPath, "_test") && (p.ForTest != "" || s.target == nil) {
 			s.target = p
 		}
-		p.InCurrentModule = !jp.DepOnly
+		if isStd {
+			// Packages in std and cmd don't have a Module field, but can't
+			// reach outside the std or cmd modules anyway.
+			p.InCurrentModule = true
+		} else {
+			// The module version is "" for anything in the workspace.
+			p.InCurrentModule = jp.Module != nil && jp.Module.Version == ""
+		}
 		p.Export = jp.Export
 		p.ImportIDs = jp.Imports
 		p.ImportMap = jp.ImportMap
