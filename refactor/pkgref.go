@@ -218,9 +218,14 @@ func (s *Snapshot) addPkgDeps(g *DepsGraph, p *Package) {
 					if p, ok := t.(*ast.StarExpr); ok {
 						t = p.X
 					}
+					if i, ok := t.(*ast.IndexExpr); ok {
+						// Method with a type-parameterized receiver.
+						t = i.X
+					}
 					id, ok := t.(*ast.Ident)
 					if !ok {
-						panic("lost receiver name")
+						s.ErrorAt(t.Pos(), "expected Ident receiver, got %T", t)
+						break
 					}
 					name = id.Name + "." + decl.Name.Name
 					g.add(QualName{p, id.Name}, QualName{p, name})
