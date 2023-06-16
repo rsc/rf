@@ -25,15 +25,24 @@ import (
 	"time"
 )
 
+// A Snapshot is a base set of Packages and their parsed source files, plus a
+// set of concurrent edits to be made to those files.
 type Snapshot struct {
 	parent   *Snapshot
 	fset     *token.FileSet
 	target   *Package
 	packages []*Package
 	pkgByID  map[string]*Package
-	edits    map[string]*Edit
-	files    map[string]*File
-	tcErrs   []types.Error
+
+	// edits contains edits made to files by this Snapshot. It's keyed by short
+	// path and only contains entries for files that have been modified.
+	edits map[string]*Edit
+
+	// files contains the contents of files before any edits in this Snapshot.
+	// It's keyed by short path (File.Name)
+	files map[string]*File
+
+	tcErrs []types.Error
 
 	r      *Refactor
 	cache  *buildCache
@@ -47,7 +56,7 @@ type Package struct {
 	ID              string
 	PkgPath         string
 	ForTest         string
-	Files           []*File
+	Files           []*File // Sorted by File.Name
 	ImportIDs       []string
 	InCurrentModule bool
 	Export          string
@@ -61,15 +70,16 @@ type Package struct {
 
 func (p *Package) String() string { return p.PkgPath }
 
+// File represents a source file, including both its text and parsed forms.
+// Files are tracked by the buildCache and are deeply immutable.
 type File struct {
-	Name     string
+	Name     string // Short path (either relative to r.dir or absolute)
 	Text     []byte
-	Syntax   *ast.File
-	Imports  []string
-	Created  bool
-	Modified bool
-	Deleted  bool
-	Hash     string // SHA256(Name+Text)
+	Syntax   *ast.File // Parsed form of Text
+	Imports  []string  // Local import paths, derived from Syntax
+	Modified bool      // Modified from on-disk file (or does not exist on disk)
+	Deleted  bool      // Tombstone marking a deleted File. Only Name is valid.
+	Hash     string    // SHA256(Name+Text)
 }
 
 type cachedTypeInfo struct {
@@ -81,8 +91,8 @@ type buildCache struct {
 	dir   string
 	r     *Refactor
 	fset  *token.FileSet
-	types map[string]*cachedTypeInfo
-	files map[string]*File
+	types map[string]*cachedTypeInfo // keyed by Package.BuildID
+	files map[string]*File           // keyed by hash(name+content)
 }
 
 func (s *Snapshot) Refactor() *Refactor { return s.r }

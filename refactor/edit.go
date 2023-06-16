@@ -239,6 +239,7 @@ func (s *Snapshot) CreatePackage(pkgpath string) (*Package, error) {
 	return p, nil
 }
 
+// currentBytes returns the contents of the given file after any edits in s.
 func (s *Snapshot) currentBytes(name string) []byte {
 	ed := s.edits[name]
 	if ed != nil {
@@ -254,6 +255,7 @@ func (s *Snapshot) currentBytes(name string) []byte {
 	return f.Text
 }
 
+// oldBytes returns the original text of the given file, prior to any edits.
 func (s *Snapshot) oldBytes(name string) []byte {
 	for s.parent != nil {
 		s = s.parent

@@ -95,9 +95,15 @@ const (
 )
 
 // A DepsGraph records dependency information.
+//
+// This is a graph over QualName nodes, with edges from each package-level
+// declaration to the identifiers it references.  If Level is PkgsRefs, then
+// QualName.Name is always "", so this decays into references between packages.
 type DepsGraph struct {
 	Level DepsGraphLevel
-	G     map[*Package]map[string]map[*Package]map[string]bool
+
+	// G is the graph, where G[p1][n1][p2][n2] is true if p1.n1 references p2.n2.
+	G map[*Package]map[string]map[*Package]map[string]bool
 }
 
 func (g *DepsGraph) Map(remap map[QualName]QualName) *DepsGraph {
