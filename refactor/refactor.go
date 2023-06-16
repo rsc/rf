@@ -22,6 +22,8 @@ type Refactor struct {
 	dir     string
 	modRoot string
 	modPath string
+
+	snapshot *Snapshot
 }
 
 func (r *Refactor) ModRoot() string {

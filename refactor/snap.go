@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/importer"
@@ -193,7 +194,28 @@ func (s *Snapshot) Packages() []*Package {
 	return s.packages
 }
 
-func (r *Refactor) Load() (*Snapshot, error) {
+// SnapError is returned instead of a Snapshot when there have been errors
+// printed to stderr.
+var SnapError = errors.New("snapshot errors")
+
+// Snapshot returns the latest Snapshot. On the first call, it loads all packages.
+func (r *Refactor) Snapshot() (*Snapshot, error) {
+	if r.snapshot == nil {
+		snap, err := r.load()
+		if err != nil {
+			return nil, err
+		}
+		r.snapshot = snap
+	}
+	if r.snapshot.Errors() > 0 {
+		return nil, SnapError
+	}
+	return r.snapshot, nil
+}
+
+// load reads all packages in the current module into r and creates the initial
+// Snapshot.
+func (r *Refactor) load() (*Snapshot, error) {
 	dir := r.dir
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -387,19 +409,21 @@ func packagesOf(pkgs map[string]*Package) []*Package {
 	return list
 }
 
-// TODO: Rename to Reload
-func (s *Snapshot) Load() (*Snapshot, error) {
-	oldS := s
-	s = &Snapshot{
+// Apply applies all edits in the current Snapshot, type-checks the resulting
+// files, and creates a new current Snapshot. If there are any type errors in
+// the new Snapshot, it prints them to stderr and returns SnapError.
+func (r *Refactor) Apply() error {
+	oldS := r.snapshot
+	s := &Snapshot{
 		r:       oldS.r,
 		parent:  oldS,
 		fset:    oldS.fset,
 		edits:   make(map[string]*Edit),
 		pkgByID: make(map[string]*Package),
 		files:   make(map[string]*File),
-		cache:   s.cache,
+		cache:   oldS.cache,
 		// exp:       s.exp, //  should use cache from now on
-		sizes: s.sizes,
+		sizes: oldS.sizes,
 	}
 
 	createsByDir := make(map[string][]*Edit)
@@ -486,7 +510,11 @@ func (s *Snapshot) Load() (*Snapshot, error) {
 	if s.Errors() == 0 {
 		s.typeCheck()
 	}
-	return s, nil
+	if s.Errors() > 0 {
+		return SnapError
+	}
+	r.snapshot = s
+	return nil
 }
 
 func (s *Snapshot) pkgImportIDs(p *Package) []string {

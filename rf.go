@@ -59,12 +59,7 @@ var cmds = map[string]func(*refactor.Snapshot, string){
 	"inject":     cmdInject,
 }
 
-type loader interface {
-	Load() (*refactor.Snapshot, error)
-}
-
 func run(rf *refactor.Refactor, script string) error {
-	var base loader = rf
 	var snap *refactor.Snapshot
 
 	text := script
@@ -98,23 +93,12 @@ func run(rf *refactor.Refactor, script string) error {
 			return fmt.Errorf("unknown command %s", cmd)
 		}
 
-		snap, err = base.Load()
+		snap, err = rf.Snapshot()
 		if err != nil {
-			return err
-		}
-		if snap.Errors() > 0 {
-			if lastCmd == "" {
+			if err == refactor.SnapError && lastCmd == "" {
 				return fmt.Errorf("errors found before executing script")
 			}
-			base := base.(*refactor.Snapshot)
-			if rf.ShowDiff {
-				if d, err := base.Diff(); err == nil {
-					rf.Stdout.Write(d)
-				}
-			} else {
-				base.Write()
-			}
-			return fmt.Errorf("errors found after executing: %s", lastCmd)
+			return err
 		}
 		x, _, ok := cut(line, "\n")
 		if ok {
@@ -139,7 +123,16 @@ func run(rf *refactor.Refactor, script string) error {
 		if snap.Errors() > 0 {
 			return fmt.Errorf("errors found during gofmt after: %s", lastCmd)
 		}
-		base = snap
+
+		if err := rf.Apply(); err == refactor.SnapError {
+			// Show diff so errors are easier to understand.
+			if d, err := snap.Diff(); err == nil {
+				rf.Stdout.Write(d)
+			}
+			return fmt.Errorf("errors found after executing: %s", lastCmd)
+		} else if err != nil {
+			return fmt.Errorf("checking rewritten packages: %w", err)
+		}
 	}
 
 	if snap == nil {
@@ -147,29 +140,14 @@ func run(rf *refactor.Refactor, script string) error {
 		return nil
 	}
 
-	// Show diff before final load, so that it's easier to understand errors.
 	if rf.ShowDiff {
 		d, err := snap.Diff()
 		if err != nil {
 			return err
 		}
 		rf.Stdout.Write(d)
-	}
-
-	// Reload packages one last time before writing,
-	// to make sure the rewrites are valid.
-	newSnap, err := snap.Load()
-	if err != nil {
-		return fmt.Errorf("checking rewritten packages: %v", err)
-	}
-	if newSnap.Errors() > 0 {
-		return fmt.Errorf("errors found after script")
-	}
-
-	if rf.ShowDiff {
 		return nil
 	}
-
 	return snap.Write()
 }
 
