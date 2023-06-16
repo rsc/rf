@@ -19,9 +19,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
+
+	"rsc.io/rf/diff"
+)
+
+const (
+	debugLoad      = false
+	debugApply     = false
+	debugTypeCheck = false
 )
 
 // A Snapshot is a base set of Packages and their parsed source files, plus a
@@ -31,7 +40,7 @@ type Snapshot struct {
 	fset     *token.FileSet
 	target   *Package
 	packages []*Package
-	pkgByID  map[string]*Package
+	pkgGraph *pkgGraph
 
 	// edits contains edits made to files by this Snapshot. It's keyed by short
 	// path and only contains entries for files that have been modified.
@@ -55,11 +64,11 @@ type Package struct {
 	PkgPath         string
 	ForTest         string
 	Files           []*File // Sorted by File.Name
-	ImportIDs       []string
+	Imports         []string
 	InCurrentModule bool
 	Export          string
 	BuildID         string
-	ImportMap       map[string]string
+	ImportMap       map[string]string // from local import path to package path (used for vendored packages in std)
 
 	Types     *types.Package
 	TypesInfo *types.Info
@@ -95,29 +104,6 @@ type buildCache struct {
 
 func (s *Snapshot) Refactor() *Refactor { return s.r }
 
-func (s *Snapshot) importToID(p *Package, imp string) string {
-	// Make sure all packages import the test version of the target,
-	// because its objects are what we will be looking for to apply
-	// replacements. This is OK as far as import cycles, because
-	// (1) if the package's test already depended on p, p's map
-	// would say this anyway, and
-	// (2) if not, then introducing this edge can't create a cycle.
-	//
-	// This logic fails as soon as there are two tests involved, though.
-	// For example, both encoding/json and math/big have tests that
-	// import the other package. This implies that we have to keep
-	// s.target to a single package!
-	if imp == s.target.PkgPath {
-		return s.target.ID
-	}
-
-	new, ok := p.ImportMap[imp]
-	if ok {
-		return new
-	}
-	return imp
-}
-
 func (s *Snapshot) ErrorAt(pos token.Pos, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	msg = strings.TrimRight(msg, "\n")
@@ -143,19 +129,19 @@ func (s *Snapshot) Packages() []*Package {
 // refactoring on each Snapshot and then call r.Commit(). On the first call, it
 // loads all packages.
 func (r *Refactor) Snapshots() ([]*Snapshot, error) {
-	if r.snapshot == nil {
-		snap, err := r.load()
+	if r.snapshots == nil {
+		snapshots, err := r.load()
 		if err != nil {
 			return nil, err
 		}
-		r.snapshot = snap
+		r.snapshots = snapshots
 	}
-	return []*Snapshot{r.snapshot}, nil
+	return r.snapshots, nil
 }
 
 // load reads all packages in the current module into r and creates the initial
-// Snapshot.
-func (r *Refactor) load() (*Snapshot, error) {
+// Snapshots.
+func (r *Refactor) load() ([]*Snapshot, error) {
 	dir := r.dir
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -209,15 +195,94 @@ func (r *Refactor) load() (*Snapshot, error) {
 	errs := new(ErrorList)
 	defer errs.flushOnPanic(r.Stderr)
 
-	s := &Snapshot{
-		r:       r,
-		pkgByID: make(map[string]*Package),
-		edits:   make(map[string]*Edit),
-		files:   make(map[string]*File),
-		Errors:  errs,
-		fset:    r.cache.fset,
-	}
+	// Parse the packages and construct several package graphs.
+	//
+	// Each package can appear several times in "go list", compiled on behalf of
+	// different test binaries. For example, in addition to the non-test
+	// "runtime" package, we also see "runtime [runtime.test]", "runtime
+	// [internal/abi.test]", and "runtime [internal/cpu.test]". "runtime
+	// [runtime.test]" is the runtime package including _test.go files that are
+	// in package runtime, ultimately on behalf of compiling the runtime_test
+	// package. This split of the runtime package means that any packages on the
+	// path between runtime_test and runtime must also have a "[runtime.test]"
+	// variant.
+	//
+	// Partly to reduce the number of packages we need to consider, we assume
+	// any "p [p.test]" package is a superset of "p", and thus we can substitute
+	// "p [p.test]" for "p". (There are at least two cases where this isn't
+	// true: "p [p.test]" can add a method p.T.X that overrides a field p.T.X
+	// and thus changes the resolution of p.T.X in importers of p, and "p
+	// [p.test]" can shadow names in the universe scope that affect types in
+	// "p". Both are demonstrated here: https://go.dev/play/p/ynQmIAHZVZu We
+	// assume such cases are exceedingly rare.)
+	//
+	// "runtime [internal/abi.test]", on the other hand, is identical to
+	// "runtime" (assuming that "p [p.test]" really is a superset of "p"), but
+	// because package runtime is on the path between internal/abi and
+	// internal/abi_test, it has a separate package to express the dependency
+	// chain "internal/abi.test" -> "runtime [internal/abi.test]" ->
+	// "internal/abi [internal/abi.test]".
+	//
+	// Where this gets tricky is that each Snapshot can only have a single
+	// variant of any given package. (We rely on this in many places. File paths
+	// are unique. There's only a single "target" package per Snapshot.
+	// Identifier lookups return a unique types.Object.) It's tempting to just
+	// take all of the "p [p.test]" variants as canonical for each "p" because
+	// they're supersets of "p", but if we do this across the whole package
+	// graph it can introduce import cycles.
+	//
+	// For example, suppose there are two packages, a and b, that have no import
+	// relationship. But a/a_test.go imports b and b/b_test.go imports a. When
+	// we're only considering the graph for a.test or the graph for b.test, this
+	// is fine. But if we attempt to merge these into a single graph, using "a
+	// [a.test]" for package a and "b [b.test]" for package b, this creates an
+	// import cycle.
+	//
+	// Hence, we may need multiple Snapshots to represent non-cyclic import
+	// graphs. We could have one Snapshot per test target, but this is wasteful
+	// because these import cycles are actually quite rare. Instead, we do a
+	// best-effort merging of package graphs to reduce the number of Snapshots.
+	//
+	// We start by building all of these package graphs separately: a base graph
+	// for all non-test variants, and one per test target. We then build up a
+	// "primary" graph, which starts with the base graph and attempts to merge
+	// each test target graph into the primary graph. If we can merge a test
+	// target graph without introducing cycles, we keep that update to the
+	// primary graph. If not, we undo that update and create a secondary graph
+	// just for that test target.
+	//
+	// This "single variant" assumption this approach satisfies is all over the
+	// code, so this is a pragmatic choice. But it has some unfortunate
+	// limitations:
+	//
+	// - It's inefficient. Each Snapshot needs a complete copy of all Packages.
+	// Each operation has to be done on all Snapshots, even if the package its
+	// operating on is identical in all Snapshots. Generally, it requires
+	// repeating a lot of work between each Snapshot. (It would be even better
+	// if we could also make changes to low-level packages that don't touch
+	// exports not require re-type-checking everything above it, but this would
+	// break types.Object equality across packages.)
+	//
+	// - If the Snapshots diverge, it's very hard to usefully explain what went
+	// wrong.
+	//
+	// - Sometimes commands only make sense on certain Snapshots. For example,
+	// if a command refers to an identifier that's in a test file. It we pushed
+	// package variants down into Item resolution, it could understand when some
+	// variants have that item and others don't and simply return the
+	// resolutions that work. It would only be an error if the item couldn't be
+	// resolved in any variant. Instead, we have a complex system of
+	// "precondition errors" that pushes this problem up to the user of this
+	// package (and often gets things wrong, like if a command is doing a lot of
+	// edits and only some preconditions are met).
+	//
+	// - Ideally we would include any p_test package in the current directory as
+	// a target, but this is both too inefficient (would require 2x as many
+	// Snapshots) and would really push on the "precondition" issue.
 
+	pkgByID := make(map[string]*Package)
+	base := newPkgGraph("base")
+	graphByTest := make(map[string]*pkgGraph) // keyed by ForTest
 	for {
 		var jp jsonPackage
 		err := dec.Decode(&jp)
@@ -233,7 +298,7 @@ func (r *Refactor) load() (*Snapshot, error) {
 
 		// The forms we expect to see are:
 		//	p (the regular package)
-		//	p [p.test] (p compiled with test code for the test binary)
+		//	q [p.test] (package q compiled with test code for the p test binary)
 		//	p_test [p.test] (p_test compiled for the test binary)
 		id := jp.ImportPath
 		pkgPath := strings.TrimSuffix(id, " ["+jp.ForTest+".test]")
@@ -241,24 +306,14 @@ func (r *Refactor) load() (*Snapshot, error) {
 			// Ignore test binaries.
 			continue
 		}
-		p := s.pkgByID[id]
-		if p == nil {
-			p = new(Package)
-			s.pkgByID[id] = p
-		}
+
+		p := new(Package)
 		p.Name = jp.Name
 		p.Dir = jp.Dir
 		p.ID = id
 		p.PkgPath = pkgPath
 		p.ForTest = jp.ForTest
 
-		// Remember the target package,
-		// which is the one in the current directory.
-		// If it is compiled twice, once with test code and once without,
-		// then prefer the one with test code, which should be strictly larger.
-		if p.Dir == dir && !strings.HasSuffix(p.PkgPath, "_test") && (p.ForTest != "" || s.target == nil) {
-			s.target = p
-		}
 		if isStd {
 			// Packages in std and cmd don't have a Module field, but can't
 			// reach outside the std or cmd modules anyway.
@@ -268,17 +323,83 @@ func (r *Refactor) load() (*Snapshot, error) {
 			p.InCurrentModule = jp.Module != nil && jp.Module.Version == ""
 		}
 		p.Export = jp.Export
-		p.ImportIDs = jp.Imports
-		p.ImportMap = jp.ImportMap
-		if len(p.Files) > 0 {
-			// We see the same packages multiple times
-			// under certain error conditions, like import cycles.
-			continue
+
+		if pkgByID[p.ID] != nil {
+			return nil, fmt.Errorf("duplicate package ID %q", p.ID)
 		}
+		pkgByID[p.ID] = p
+
+		// jp.Imports is a list of package IDs. Since we're splitting package
+		// variants into different package graphs anyway, it's much easier to
+		// just flatten down to package path, which is unique within each
+		// package graph.
+		var imports []string
+		have := make(map[string]bool)
+		for _, impID := range jp.Imports {
+			if impID == "C" {
+				// cgo has been compiled out already
+				continue
+			}
+			p1 := pkgByID[impID]
+			if p1 == nil {
+				return nil, fmt.Errorf("package %q imports %q, which is missing from go list", p.ID, impID)
+			}
+			if have[p1.PkgPath] {
+				// Imports can be listed multiple times.
+				continue
+			}
+			have[p1.PkgPath] = true
+			imports = append(imports, p1.PkgPath)
+		}
+		sort.Strings(imports)
+		p.Imports = imports
+
+		// Convert the IDs in the ImportMap to package paths as well.
+		//
+		// TODO: Introduce a type for local import paths so import paths and
+		// package paths aren't so easy to mix up?
+		var importMap map[string]string
+		for localPath, id := range jp.ImportMap {
+			p1 := pkgByID[id]
+			if p1 == nil {
+				return nil, fmt.Errorf("package %q imports %q as %q, which is missing from go list", p.ID, id, localPath)
+			}
+			if localPath == p1.PkgPath {
+				// Typical for test-related package IDs.
+				continue
+			}
+			if importMap == nil {
+				importMap = make(map[string]string)
+			}
+			importMap[localPath] = p1.PkgPath
+		}
+		p.ImportMap = importMap
+
+		// Add this package to the appropriate package graph.
+		g := base
+		if p.ForTest != "" {
+			g = graphByTest[p.ForTest]
+			if g == nil {
+				g = newPkgGraph(p.ForTest)
+				graphByTest[p.ForTest] = g
+			}
+		}
+		g.add(p)
+		if debugLoad {
+			fmt.Println("new package", id, "added to graph", g.name)
+		}
+
 		if false && !p.InCurrentModule && p.Export != "" {
 			// Outside current module, so not updating.
 			// Load from export data.
 			// Don't bother with source files.
+			continue
+		}
+
+		if jp.Error != nil && len(jp.CompiledGoFiles) == 0 {
+			// There was a loading error that was so bad we couldn't get a list
+			// of files. Report it now.
+			errs.Add(fmt.Errorf("%s", strings.TrimSuffix(jp.Error.Err, "\n")))
 			continue
 		}
 
@@ -294,82 +415,192 @@ func (r *Refactor) load() (*Snapshot, error) {
 			name = r.shortPath(name)
 			f, err := r.cache.newFile(name)
 			if err != nil {
-				s.Errors.Add(err)
+				errs.Add(err)
 				continue
 			}
 			p.Files = append(p.Files, f)
-			s.files[f.Name] = f
 		}
 	}
-	s.packages = packagesOf(s.pkgByID)
-
-	// Update ImportIDs to force use of s.target
-	// by all imports of s.target.PkgPath,
-	// just as s.importToID will.
-	// See s.importToID for rationale.
-	// Also remove "C" - cgo has been compiled out.
-	var pkgs []*Package
-	for _, p := range s.packages {
-		if p.PkgPath == s.target.PkgPath && p.ID != s.target.ID {
-			delete(s.pkgByID, p.ID)
-			continue
-		}
-		pkgs = append(pkgs, p)
-		var save []string
-		for _, imp := range p.ImportIDs {
-			if imp == "C" {
-				continue
-			}
-			if imp == s.target.PkgPath {
-				imp = s.target.ID
-			}
-			save = append(save, imp)
-		}
-		p.ImportIDs = save
-	}
-	s.packages = pkgs
-
-	if s.Errors.Err() == nil {
-		s.typeCheck()
-	}
-	if err := s.Errors.Err(); err != nil {
+	if err := errs.Err(); err != nil {
+		// Parsing failed.
 		return nil, err
 	}
-	return s, nil
-}
 
-func packagesOf(pkgs map[string]*Package) []*Package {
-	var list []*Package
-	for _, p := range pkgs {
-		list = append(list, p)
+	if debugLoad {
+		fmt.Println(len(graphByTest), "initial test graphs")
 	}
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].ID < list[j].ID
+
+	// Merge graphs as long as we don't create cycles. We use a simple greedy
+	// approach, and apply a heuristic to merge the graphs with fewer edges
+	// first since they're less likely to create cycles.
+	var testGraphs []*pkgGraph
+	for _, g := range graphByTest {
+		testGraphs = append(testGraphs, g)
+	}
+	sort.Slice(testGraphs, func(i, j int) bool {
+		if testGraphs[i].nEdges != testGraphs[j].nEdges {
+			return testGraphs[i].nEdges < testGraphs[j].nEdges
+		}
+		return testGraphs[i].name < testGraphs[j].name
 	})
-	return list
+	if c := base.findCycle(true); c != nil {
+		return nil, fmt.Errorf("base package graph contains cycle: %s", c)
+	}
+	allGraphs := []*pkgGraph{base}
+	for _, testGraph := range testGraphs {
+		// Try merging this test package graph into the primary graph. This
+		// works for the vast majority of test packages in std.
+		primary := &allGraphs[0]
+		g := (*primary).merge(testGraph)
+		c := g.findCycle(debugLoad)
+		if c == nil {
+			// We were able to add this test package graph without introducing
+			// cycles. Keep it.
+			g.name = "primary"
+			if debugLoad {
+				fmt.Println("merged", testGraph.name, "into", g.name)
+			}
+			*primary = g
+			continue
+		}
+		// This test package adds cycles to the primary graph. As another
+		// heuristic, try adding it in to the previous secondary graph. On std,
+		// this is incredibly effective.
+		if len(allGraphs) > 1 {
+			pprev := &allGraphs[len(allGraphs)-1]
+			g := (*pprev).merge(testGraph)
+			if g.findCycle(false) == nil {
+				// Great. Commit it to that graph.
+				g.name = (*pprev).name
+				if debugLoad {
+					fmt.Println("merged", testGraph.name, "into", g.name)
+				}
+				*pprev = g
+				continue
+			}
+		}
+		// Give up an create a new secondary graph.
+		if debugLoad {
+			fmt.Println("new secondary graph", testGraph.name, "because", c)
+		}
+		// We need to clone all of the Packages in the base graph because
+		// Packages cache things like the build ID and type-checking results,
+		// which are sensitive to the graph the Package is in, and have some
+		// mutable fields like Files.
+		g = base.clonePackages().merge(testGraph)
+		g.name = testGraph.name
+		if c := g.findCycle(true); c != nil {
+			// This shouldn't happen.
+			return nil, fmt.Errorf("combining test package graph %s into base graph created a cycle: %s", testGraph.name, c)
+		}
+		allGraphs = append(allGraphs, g)
+	}
+
+	if debugLoad {
+		fmt.Println(len(allGraphs), "total merged graphs")
+		if true {
+			for i, g := range allGraphs {
+				fmt.Printf("-- graph %d --\n", i)
+				g.dump(os.Stdout)
+			}
+		}
+	}
+
+	// Create Snapshots from graphs.
+	var snapshots []*Snapshot
+	for _, graph := range allGraphs {
+		s := &Snapshot{
+			r:        r,
+			pkgGraph: graph,
+			edits:    make(map[string]*Edit),
+			files:    make(map[string]*File),
+			Errors:   new(ErrorList),
+			fset:     r.cache.fset,
+			packages: graph.packages(),
+		}
+		snapshots = append(snapshots, s)
+
+		for _, p := range s.packages {
+			for _, f := range p.Files {
+				s.files[f.Name] = f
+			}
+			// Remember the target package,
+			// which is the one in the current directory.
+			//
+			// TODO: Ideally we would include the p_test package, too (if there
+			// is one), but that requires creating more Snapshots. (If we just
+			// allowed package variants, item resolution could understand p_test
+			// and this would scale much better.)
+			if p.Dir == dir && !strings.HasSuffix(p.PkgPath, "_test") {
+				if s.target != nil {
+					panic(fmt.Sprintf("found two target packages for directory %q: %q and %q", dir, s.target, p))
+				}
+				s.target = p
+			}
+		}
+
+		if s.Errors.Err() == nil {
+			s.typeCheck()
+		}
+		if err := s.Errors.Err(); err != nil {
+			errs.Add(err)
+		}
+	}
+	if err := errs.Err(); err != nil {
+		return nil, err
+	}
+
+	return snapshots, nil
 }
 
 // Apply applies edits to all Snapshots, type-checks the resulting files, and
 // creates a new set of current Snapshots. If there are any type errors in the
 // new Snapshots, it returns an ErrorList.
 func (r *Refactor) Apply() error {
-	oldS := r.snapshot
+	newSnapshots := make([]*Snapshot, len(r.snapshots))
+	var errs ErrorList
+	for i, snap := range r.snapshots {
+		newSnapshot, err := snap.apply()
+		switch err := err.(type) {
+		case nil:
+		case *ErrorList:
+			errs.Add(err)
+		default:
+			return err
+		}
+		newSnapshots[i] = newSnapshot
+	}
+	if err := errs.Err(); err != nil {
+		return err
+	}
+	r.snapshots = newSnapshots
+	return nil
+}
+
+func (oldS *Snapshot) apply() (*Snapshot, error) {
 	s := &Snapshot{
-		r:       oldS.r,
-		parent:  oldS,
-		fset:    oldS.fset,
-		edits:   make(map[string]*Edit),
-		pkgByID: make(map[string]*Package),
-		files:   make(map[string]*File),
-		Errors:  oldS.Errors,
+		r:        oldS.r,
+		parent:   oldS,
+		fset:     oldS.fset,
+		edits:    make(map[string]*Edit),
+		pkgGraph: newPkgGraph(oldS.pkgGraph.name),
+		files:    make(map[string]*File),
+		Errors:   oldS.Errors,
 		// exp:       s.exp, //  should use cache from now on
 		sizes: oldS.sizes,
 	}
-	defer s.Errors.flushOnPanic(r.Stderr)
+	defer s.Errors.flushOnPanic(s.r.Stderr)
+
+	if debugApply {
+		fmt.Printf("start apply, creating Snapshot %p from %p\n", s, oldS)
+	}
 
 	for _, oldP := range oldS.packages {
 		if !oldP.InCurrentModule { // immutable w/ immutable dependencies
-			s.pkgByID[oldP.ID] = oldP
+			if debugApply {
+				fmt.Printf("apply: copying %s %p to new Snapshot\n", oldP.ID, oldP)
+			}
+			s.pkgGraph.add(oldP)
 			for _, f := range oldP.Files {
 				s.files[f.Name] = f
 			}
@@ -384,9 +615,11 @@ func (r *Refactor) Apply() error {
 			InCurrentModule: oldP.InCurrentModule,
 			ImportMap:       oldP.ImportMap,
 		}
-		s.pkgByID[p.ID] = p
 		if oldS.target == oldP {
 			s.target = p
+		}
+		if debugApply {
+			fmt.Printf("apply %s %p => %s %p in Snapshot %p\n", oldP.ID, oldP, p.ID, p, s)
 		}
 
 		// Build file list.
@@ -420,23 +653,28 @@ func (r *Refactor) Apply() error {
 		for _, f := range p.Files {
 			s.files[f.Name] = f
 		}
+
+		// Gather imports from files.
+		p.Imports = s.pkgImportsFromFiles(p)
+		if debugApply && !reflect.DeepEqual(oldP.Imports, p.Imports) {
+			fmt.Printf("apply: updated imports\n  old: %s\n  new: %s\n", oldP.Imports, p.Imports)
+		}
+
+		// Add to new package graph.
+		s.pkgGraph.add(p)
 	}
-	s.packages = packagesOf(s.pkgByID)
-	for _, p := range s.packages {
-		p.ImportIDs = s.pkgImportIDs(p)
-	}
+	s.packages = s.pkgGraph.packages()
 
 	if s.Errors.Err() == nil {
 		s.typeCheck()
 	}
 	if err := s.Errors.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	r.snapshot = s
-	return nil
+	return s, nil
 }
 
-func (s *Snapshot) pkgImportIDs(p *Package) []string {
+func (s *Snapshot) pkgImportsFromFiles(p *Package) []string {
 	var list []string
 	have := make(map[string]bool)
 	for _, f := range p.Files {
@@ -444,9 +682,13 @@ func (s *Snapshot) pkgImportIDs(p *Package) []string {
 			if imp == "C" {
 				continue
 			}
+			// Map the local import path to a package path.
+			if imp1, ok := p.ImportMap[imp]; ok {
+				imp = imp1
+			}
 			if !have[imp] {
 				have[imp] = true
-				list = append(list, s.importToID(p, imp))
+				list = append(list, imp)
 			}
 		}
 	}
@@ -460,73 +702,40 @@ func (s *Snapshot) typeCheck() {
 	waiting := make(map[*Package]map[*Package]bool)
 	rdeps := make(map[*Package][]*Package)
 	for _, p := range s.packages {
-		if len(p.ImportIDs) == 0 {
+		if len(p.Imports) == 0 {
 			ready[p] = true
 		} else {
 			waiting[p] = make(map[*Package]bool)
-			for _, id := range p.ImportIDs {
-				if id == "C" {
-					continue
-				}
-				p1 := s.pkgByID[id]
+			for _, pkgPath := range p.Imports {
+				p1 := s.pkgGraph.byPath(pkgPath)
 				if p1 == nil {
-					println("LOST", id)
+					s.ErrorAt(token.NoPos, "package %s imports %s, but %s isn't in the Snapshot", p, pkgPath, pkgPath)
+					continue
 				}
 				waiting[p][p1] = true
 				rdeps[p1] = append(rdeps[p1], p)
 			}
 		}
 	}
+	if s.Errors.Err() != nil {
+		return
+	}
 
 	// Diagnose cycles (well, at least one).
-	walked := make(map[*Package]int)
-	var stack []*Package
-	var cycle []*Package
-	var walk func(*Package)
-	walk = func(p *Package) {
-		if walked[p] == 2 || cycle != nil {
-			return
-		}
-		if walked[p] == 1 {
-			// cycle!
-			for i := len(stack) - 1; i >= 0; i-- {
-				if stack[i] == p {
-					cycle = append(cycle, stack[i:]...)
-					return
-				}
-			}
-			return
-		}
-		walked[p] = 1
-		stack = append(stack, p)
-		for _, p1 := range rdeps[p] {
-			walk(p1)
-		}
-		stack = stack[:len(stack)-1]
-		walked[p] = 2
-	}
-	for p := range rdeps {
-		walk(p)
-	}
-	if cycle != nil {
-		var b bytes.Buffer
-		off := 0
-		for i := range cycle {
-			if cycle[i].PkgPath < cycle[off].PkgPath {
-				off = i
-			}
-		}
-		fmt.Fprintf(&b, "%s", cycle[off].PkgPath)
-		for i := len(cycle) - 1; i >= 0; i-- {
-			fmt.Fprintf(&b, " -> %s", cycle[(off+i)%len(cycle)].PkgPath)
-		}
-		s.ErrorAt(token.NoPos, "import cycle: %v", b.String())
+	if c := s.pkgGraph.findCycle(true); c != nil {
+		s.ErrorAt(token.NoPos, "import cycle: %s", c)
 		return
 	}
 
 	// Type check.
+	if debugTypeCheck {
+		fmt.Println("start typecheck")
+	}
 	for len(ready) > 0 {
 		for p := range ready {
+			if debugTypeCheck {
+				fmt.Printf("typecheck %s %p for snapshot %p\n", p.ID, p, s)
+			}
 			s.check(p)
 			delete(ready, p)
 			if p.Types == nil {
@@ -558,8 +767,16 @@ type snapImporter struct {
 }
 
 func (s *snapImporter) Import(path string) (*types.Package, error) {
-	id := s.s.importToID(s.p, path)
-	p := s.s.pkgByID[id]
+	if path1, ok := s.p.ImportMap[path]; ok {
+		// This is a vendored package in std, so we need to remap the "local"
+		// import path to the unique vendored import path.
+		path = path1
+	}
+
+	p := s.s.pkgGraph.byPath(path)
+	if debugTypeCheck {
+		fmt.Printf("import %s %p resolve %s => %s %p\n", s.p.ID, s.p, path, p.ID, p)
+	}
 	if p == nil {
 		return nil, fmt.Errorf("import not available: %s", path)
 	}
@@ -586,10 +803,14 @@ func (s *Snapshot) check(p *Package) {
 					h.Write([]byte(f.Hash))
 				}
 			}
-			for _, imp := range p.ImportIDs {
-				h.Write([]byte(imp + "\x00" + s.pkgByID[s.importToID(p, imp)].BuildID + "\x00"))
+			for _, imp := range p.Imports {
+				pImp := s.pkgGraph.byPath(imp)
+				h.Write([]byte(imp + "\x00" + pImp.BuildID + "\x00"))
 			}
 			p.BuildID = fmt.Sprintf("%x", h.Sum(nil))
+		}
+		if debugTypeCheck {
+			fmt.Println("computed BuildID", p.BuildID, "for", p.ID)
 		}
 	}
 
@@ -656,9 +877,99 @@ func opener(name string) func(string) (io.ReadCloser, error) {
 // TODO: Maybe there should be another type representing just the modified file
 // system. Snapshots could use that internally so we can still, e.g., show diffs
 // on errors, and this could return it directly rather than returning a weird
-// Snapshot.
+// Snapshot. That would make it easy to separate out "apply edits" from "build a
+// new Snapshot" in apply, and here we could reuse "apply edits".
 func (r *Refactor) MergeSnapshots() (*Snapshot, error) {
-	return r.snapshot, nil
+	var errs ErrorList
+	failed := false
+	merge := func(base, s *Snapshot, doEdits bool) {
+		// Merge s into base.
+		for _, name := range s.fileNames() {
+			// Get the file from s.
+			f := s.files[name]
+			if ed := s.edits[name]; doEdits && ed != nil {
+				if ed.Delete {
+					f = &File{
+						Name:    f.Name,
+						Deleted: true,
+					}
+				} else {
+					text, err := ed.NewText()
+					if err != nil {
+						errs.Add(fmt.Errorf("%s: %v", f.Name, err))
+						continue
+					}
+					f, err = r.cache.newFileText(f.Name, text, true)
+					if err != nil {
+						// TODO: If we failed with a parse error and are trying
+						// to merge snapshots to report the diff, we'll get a
+						// second parse error here, which is silly because we
+						// really only care about the raw text, not the AST.
+						errs.Add(err)
+						continue
+					}
+				}
+			}
+
+			f1 := base.files[name]
+			if f1 == nil {
+				// The file doesn't exist in base, so no conflicts.
+				base.files[name] = f
+				continue
+			}
+			if !f.Modified && !f1.Modified {
+				// Neither Snapshot modified it. No need to check further.
+				continue
+			}
+			// The file exists in both and was modified in at least one. Check
+			// that the contents agree.
+			if !bytes.Equal(f.Text, f1.Text) {
+				failed = true
+				if !filepath.IsAbs(name) {
+					name = filepath.Join(r.dir, name)
+				}
+				rel, err := filepath.Rel(r.modRoot, name)
+				if err != nil {
+					panic(err)
+				}
+				fmt.Fprintf(r.Stderr, "%s: refactoring diverged\n", rel)
+				d, err := diff.Diff("s1/"+rel, f1.Text, "s2/"+rel, f.Text)
+				if err != nil {
+					panic(err)
+				}
+				r.Stderr.Write(d)
+			}
+		}
+	}
+
+	// We merge all of the current Snapshots or r into ms, as well as all of the
+	// starting Snapshots of r into base so that ms.Diff has a base Snapshot to
+	// diff against.
+	base := &Snapshot{
+		r:     r,
+		files: make(map[string]*File),
+	}
+	ms := &Snapshot{
+		parent: base,
+		r:      r,
+		files:  make(map[string]*File),
+	}
+	for _, s := range r.snapshots {
+		merge(ms, s, true)
+
+		parent := s
+		for parent.parent != nil {
+			parent = parent.parent
+		}
+		merge(base, parent, false)
+	}
+	if failed {
+		return nil, fmt.Errorf("refactoring diverged")
+	}
+	if err := errs.Err(); err != nil {
+		return nil, err
+	}
+	return ms, nil
 }
 
 func (c *buildCache) newFile(name string) (*File, error) {

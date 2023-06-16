@@ -26,7 +26,7 @@ type Refactor struct {
 
 	cache *buildCache
 
-	snapshot *Snapshot
+	snapshots []*Snapshot
 }
 
 func (r *Refactor) ModRoot() string {

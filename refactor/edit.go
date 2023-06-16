@@ -236,7 +236,7 @@ func (s *Snapshot) CreatePackage(pkgpath string) (*Package, error) {
 		InCurrentModule: true,
 	}
 	p.Types = types.NewPackage(p.PkgPath, p.Name)
-	s.pkgByID[p.ID] = p
+	s.pkgGraph.add(p)
 	s.packages = append(s.packages, p)
 	return p, nil
 }
@@ -272,7 +272,9 @@ func (s *Snapshot) oldBytes(name string) []byte {
 	return f.Text
 }
 
-func (s *Snapshot) Diff() ([]byte, error) {
+// fileNames returns the names of all files in Snapshot, including those created
+// by Edits.
+func (s *Snapshot) fileNames() []string {
 	var names []string
 	for name := range s.files {
 		names = append(names, name)
@@ -291,8 +293,12 @@ func (s *Snapshot) Diff() ([]byte, error) {
 		return names[i] < names[j]
 	})
 
+	return names
+}
+
+func (s *Snapshot) Diff() ([]byte, error) {
 	var diffs []byte
-	for _, name := range names {
+	for _, name := range s.fileNames() {
 		new := s.currentBytes(name)
 		if new == nil {
 			continue
@@ -318,26 +324,9 @@ func (s *Snapshot) Diff() ([]byte, error) {
 }
 
 func (s *Snapshot) Write() error {
-	var names []string
-	for name := range s.files {
-		names = append(names, name)
-	}
-	for name, ed := range s.edits {
-		if ed.Create {
-			names = append(names, name)
-		}
-	}
-	sort.Slice(names, func(i, j int) bool {
-		di, dj := filepath.Dir(names[i]), filepath.Dir(names[j])
-		if di != dj {
-			return di < dj
-		}
-		return names[i] < names[j]
-	})
-
 	created := make(map[string]int)
 	failed := false
-	for _, name := range names {
+	for _, name := range s.fileNames() {
 		new := s.currentBytes(name)
 		old := s.oldBytes(name)
 		if bytes.Equal(old, new) {

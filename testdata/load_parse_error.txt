@@ -1,0 +1,8 @@
+mv M Z
+-- m.go --
+package m
+
+var x = 1 + "A"
+-- stderr --
+m.go:3:9: invalid operation: 1 + "A" (mismatched types untyped int and untyped string)
+errors found before executing script

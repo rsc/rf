@@ -1,0 +1,58 @@
+# Flattening test packages can introduce cycles. Here x [x.test] and y [y.test]
+# import y and x, so in a flattened configuration they introduce a cycle.
+# Make sure we can load the graph and modify all test variants.
+
+mv M Z
+-- m.go --
+package m
+
+var M = 1
+-- x/x.go --
+package x
+
+var X = 1
+-- x/x_test.go --
+package x
+
+import "m"
+import "m/y"
+
+var Sum = m.M + y.Y
+-- y/y.go --
+package y
+
+var Y = 1
+-- y/y_test.go --
+package y
+
+import "m"
+import "m/x"
+
+var Sum = m.M + x.X
+-- stdout --
+diff old/m.go new/m.go
+--- old/m.go
++++ new/m.go
+@@ -1,3 +1,3 @@
+ package m
+
+-var M = 1
++var Z = 1
+diff old/x/x_test.go new/x/x_test.go
+--- old/x/x_test.go
++++ new/x/x_test.go
+@@ -3,4 +3,4 @@
+ import "m"
+ import "m/y"
+
+-var Sum = m.M + y.Y
++var Sum = m.Z + y.Y
+diff old/y/y_test.go new/y/y_test.go
+--- old/y/y_test.go
++++ new/y/y_test.go
+@@ -3,4 +3,4 @@
+ import "m"
+ import "m/x"
+
+-var Sum = m.M + x.X
++var Sum = m.Z + x.X

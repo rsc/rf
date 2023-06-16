@@ -1,0 +1,29 @@
+# Check that errors that happen across all snapshots are reported just once.
+add m.go var X = 1 + "a"
+-- m.go --
+package m
+-- x/x.go --
+package x
+-- x/x_test.go --
+package x
+
+import _ "m"
+import _ "m/y"
+-- y/y.go --
+package y
+-- y/y_test.go --
+package y
+
+import _ "m"
+import _ "m/x"
+-- stdout --
+diff old/m.go new/m.go
+--- old/m.go
++++ new/m.go
+@@ -1 +1,3 @@
+ package m
++
++var X = 1 + "a"
+-- stderr --
+m.go:3:9: invalid operation: 1 + "a" (mismatched types untyped int and untyped string)
+errors found after executing: add m.go var X = 1 + "a"
