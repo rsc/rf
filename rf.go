@@ -60,7 +60,7 @@ var cmds = map[string]func(*refactor.Snapshot, string){
 }
 
 func run(rf *refactor.Refactor, script string) error {
-	var snap *refactor.Snapshot
+	var snaps []*refactor.Snapshot
 
 	text := script
 	lastCmd := ""
@@ -93,7 +93,7 @@ func run(rf *refactor.Refactor, script string) error {
 			return fmt.Errorf("unknown command %s", cmd)
 		}
 
-		snap, err = rf.Snapshot()
+		snaps, err = rf.Snapshots()
 		if err != nil {
 			if err == refactor.SnapError && lastCmd == "" {
 				return fmt.Errorf("errors found before executing script")
@@ -106,26 +106,34 @@ func run(rf *refactor.Refactor, script string) error {
 		}
 		lastCmd = x
 
-		targ := snap.Target()
-		if targ == nil {
-			return fmt.Errorf("missing target")
-		}
-		if targ.Types == nil {
-			return fmt.Errorf("no types in target")
-		}
+		for _, snap := range snaps {
+			targ := snap.Target()
+			if targ == nil {
+				return fmt.Errorf("missing target")
+			}
+			if targ.Types == nil {
+				return fmt.Errorf("no types in target")
+			}
 
-		fn(snap, args)
-		if snap.Errors() > 0 {
-			return fmt.Errorf("errors found during: %s", lastCmd)
-		}
+			fn(snap, args)
+			if snap.Errors() > 0 {
+				return fmt.Errorf("errors found during: %s", lastCmd)
+			}
 
-		snap.Gofmt()
-		if snap.Errors() > 0 {
-			return fmt.Errorf("errors found during gofmt after: %s", lastCmd)
+			snap.Gofmt()
+			if snap.Errors() > 0 {
+				return fmt.Errorf("errors found during gofmt after: %s", lastCmd)
+			}
 		}
 
 		if err := rf.Apply(); err == refactor.SnapError {
 			// Show diff so errors are easier to understand.
+			snap, err := rf.MergeSnapshots()
+			if err != nil {
+				// TODO If the snapshots diverged, maybe we still want to show
+				// some diff that led to the original error?
+				return err
+			}
 			if d, err := snap.Diff(); err == nil {
 				rf.Stdout.Write(d)
 			}
@@ -135,11 +143,16 @@ func run(rf *refactor.Refactor, script string) error {
 		}
 	}
 
-	if snap == nil {
+	if snaps == nil {
 		// Did nothing.
 		return nil
 	}
 
+	snap, err := rf.MergeSnapshots()
+	if err != nil {
+		// Snapshots diverged.
+		return err
+	}
 	if rf.ShowDiff {
 		d, err := snap.Diff()
 		if err != nil {

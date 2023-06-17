@@ -198,8 +198,10 @@ func (s *Snapshot) Packages() []*Package {
 // printed to stderr.
 var SnapError = errors.New("snapshot errors")
 
-// Snapshot returns the latest Snapshot. On the first call, it loads all packages.
-func (r *Refactor) Snapshot() (*Snapshot, error) {
+// Snapshots returns the latest Snapshot set. The caller should perform the same
+// refactoring on each Snapshot and then call r.Commit(). On the first call, it
+// loads all packages.
+func (r *Refactor) Snapshots() ([]*Snapshot, error) {
 	if r.snapshot == nil {
 		snap, err := r.load()
 		if err != nil {
@@ -210,7 +212,7 @@ func (r *Refactor) Snapshot() (*Snapshot, error) {
 	if r.snapshot.Errors() > 0 {
 		return nil, SnapError
 	}
-	return r.snapshot, nil
+	return []*Snapshot{r.snapshot}, nil
 }
 
 // load reads all packages in the current module into r and creates the initial
@@ -409,9 +411,9 @@ func packagesOf(pkgs map[string]*Package) []*Package {
 	return list
 }
 
-// Apply applies all edits in the current Snapshot, type-checks the resulting
-// files, and creates a new current Snapshot. If there are any type errors in
-// the new Snapshot, it prints them to stderr and returns SnapError.
+// Apply applies edits to all Snapshots, type-checks the resulting files, and
+// creates a new set of current Snapshots. If there are any type errors in the
+// new Snapshots, it prints them to stderr and returns SnapError.
 func (r *Refactor) Apply() error {
 	oldS := r.snapshot
 	s := &Snapshot{
@@ -708,6 +710,18 @@ func opener(name string) func(string) (io.ReadCloser, error) {
 		}
 		return f, nil
 	}
+}
+
+// MergeSnapshots combines all Snapshots. The resulting Snapshot contains only
+// files and cannot be type-checked, but can be written out. If any Snapshots
+// are inconsistent, it prints details to r.Stderr and returns an error.
+//
+// TODO: Maybe there should be another type representing just the modified file
+// system. Snapshots could use that internally so we can still, e.g., show diffs
+// on errors, and this could return it directly rather than returning a weird
+// Snapshot.
+func (r *Refactor) MergeSnapshots() (*Snapshot, error) {
+	return r.snapshot, nil
 }
 
 func (c *buildCache) newFile(name string) (*File, error) {
