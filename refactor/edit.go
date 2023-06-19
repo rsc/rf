@@ -177,14 +177,15 @@ func (s *Snapshot) DeleteFile(pos token.Pos) {
 	s.edits[name] = &Edit{Name: name, Delete: true}
 }
 
-func (s *Snapshot) CreateFile(p *Package, name, text string) *ast.File {
-	name = s.r.shortPath(filepath.Join(p.Dir, name))
+func (s *Snapshot) CreateFile(p *Package, baseName, text string) *ast.File {
+	name := filepath.Join(p.Dir, baseName)
 	// TODO
 	if text == "" {
 		text = "package " + p.Name + "\n"
 	}
 	base := s.fset.Base()
-	syntax, err := parser.ParseFile(s.fset, name, text, parser.ParseComments)
+
+	file, err := s.cache.newFileText(name, []byte(text), true)
 	if err != nil {
 		println("TEXT", text)
 		panic("CreateFile parse: " + err.Error())
@@ -193,17 +194,18 @@ func (s *Snapshot) CreateFile(p *Package, name, text string) *ast.File {
 		Name:   name,
 		Create: true,
 		Buffer: NewBufferAt(s, token.Pos(base), []byte(text)),
-		File:   &File{Name: name, Syntax: syntax},
+		File:   file,
 	}
-	s.edits[name] = ed
+	if s.files[file.Name] != nil || s.edits[file.Name] != nil {
+		panic(fmt.Sprintf("file %s created twice", file.Name))
+	}
+	s.edits[file.Name] = ed
 
-	// TODO: what about adding to package?
 	p.Files = append(p.Files, ed.File)
 	sort.Slice(p.Files, func(i, j int) bool {
 		return p.Files[i].Name < p.Files[j].Name
 	})
-	s.files[name] = ed.File
-	return syntax
+	return file.Syntax
 }
 
 func (s *Snapshot) CreatePackage(pkgpath string) (*Package, error) {
@@ -271,6 +273,11 @@ func (s *Snapshot) Diff() ([]byte, error) {
 	var names []string
 	for name := range s.files {
 		names = append(names, name)
+	}
+	for name, ed := range s.edits {
+		if ed.Create {
+			names = append(names, name)
+		}
 	}
 
 	sort.Slice(names, func(i, j int) bool {

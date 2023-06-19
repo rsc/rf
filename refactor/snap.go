@@ -426,14 +426,6 @@ func (r *Refactor) Apply() error {
 		sizes: oldS.sizes,
 	}
 
-	createsByDir := make(map[string][]*Edit)
-	for name, ed := range oldS.edits {
-		if ed.Create {
-			dir := filepath.Dir(name)
-			createsByDir[dir] = append(createsByDir[dir], ed)
-		}
-	}
-
 	for _, oldP := range oldS.packages {
 		if !oldP.InCurrentModule { // immutable w/ immutable dependencies
 			s.pkgByID[oldP.ID] = oldP
@@ -478,20 +470,6 @@ func (r *Refactor) Apply() error {
 				continue
 			}
 			f, err := s.cache.newFileText(oldF.Name, text, true)
-			if err != nil {
-				s.saveErrors(err)
-				continue
-			}
-			p.Files = append(p.Files, f)
-		}
-		for _, ed := range createsByDir[p.Dir] {
-			// Use new file.
-			text, err := ed.NewText()
-			if err != nil {
-				// TODO
-				continue
-			}
-			f, err := s.cache.newFileText(ed.Name, text, true)
 			if err != nil {
 				s.saveErrors(err)
 				continue
@@ -733,12 +711,10 @@ func opener(name string) func(string) (io.ReadCloser, error) {
 }
 
 func (c *buildCache) newFile(name string) (*File, error) {
-	abs := name
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(c.r.dir, name)
+	if !filepath.IsAbs(name) {
+		name = filepath.Join(c.r.dir, name)
 	}
-	name = c.r.shortPath(abs)
-	text, err := ioutil.ReadFile(abs)
+	text, err := ioutil.ReadFile(name)
 	if err != nil {
 		return nil, err
 	}
@@ -746,6 +722,11 @@ func (c *buildCache) newFile(name string) (*File, error) {
 }
 
 func (c *buildCache) newFileText(name string, text []byte, modified bool) (*File, error) {
+	if !filepath.IsAbs(name) {
+		name = filepath.Join(c.r.dir, name)
+	}
+	name = c.r.shortPath(name)
+
 	h := sha256.New()
 	h.Write([]byte(name))
 	h.Write([]byte("\x00"))
