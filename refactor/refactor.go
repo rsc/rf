@@ -6,6 +6,7 @@ package refactor
 
 import (
 	"fmt"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,6 +23,8 @@ type Refactor struct {
 	dir     string
 	modRoot string
 	modPath string
+
+	cache *buildCache
 
 	snapshot *Snapshot
 }
@@ -66,6 +69,14 @@ func New(dir string) (*Refactor, error) {
 		Debug:  make(map[string]string),
 		dir:    dir,
 	}
+	fset := token.NewFileSet()
+	r.cache = &buildCache{
+		r:     r,
+		fset:  fset,
+		types: make(map[string]*cachedTypeInfo),
+		files: make(map[string]*File),
+	}
+
 	return r, nil
 }
 

@@ -185,7 +185,7 @@ func (s *Snapshot) CreateFile(p *Package, baseName, text string) *ast.File {
 	}
 	base := s.fset.Base()
 
-	file, err := s.cache.newFileText(name, []byte(text), true)
+	file, err := s.r.cache.newFileText(name, []byte(text), true)
 	if err != nil {
 		println("TEXT", text)
 		panic("CreateFile parse: " + err.Error())

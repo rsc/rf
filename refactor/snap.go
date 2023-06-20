@@ -209,20 +209,13 @@ func (r *Refactor) load() (*Snapshot, error) {
 	errs := new(ErrorList)
 	defer errs.flushOnPanic(r.Stderr)
 
-	fset := token.NewFileSet()
 	s := &Snapshot{
 		r:       r,
 		pkgByID: make(map[string]*Package),
 		edits:   make(map[string]*Edit),
 		files:   make(map[string]*File),
-		fset:    fset,
 		Errors:  errs,
-		cache: &buildCache{
-			r:     r,
-			fset:  fset,
-			types: make(map[string]*cachedTypeInfo),
-			files: make(map[string]*File),
-		},
+		fset:    r.cache.fset,
 	}
 
 	for {
@@ -298,8 +291,8 @@ func (r *Refactor) load() (*Snapshot, error) {
 			if !filepath.IsAbs(name) {
 				name = filepath.Join(p.Dir, name)
 			}
-			name = s.r.shortPath(name)
-			f, err := s.cache.newFile(name)
+			name = r.shortPath(name)
+			f, err := r.cache.newFile(name)
 			if err != nil {
 				s.Errors.Add(err)
 				continue
@@ -369,7 +362,6 @@ func (r *Refactor) Apply() error {
 		pkgByID: make(map[string]*Package),
 		files:   make(map[string]*File),
 		Errors:  oldS.Errors,
-		cache:   oldS.cache,
 		// exp:       s.exp, //  should use cache from now on
 		sizes: oldS.sizes,
 	}
@@ -418,7 +410,7 @@ func (r *Refactor) Apply() error {
 				s.ErrorAt(token.NoPos, "%s: %v", oldF.Name, err)
 				continue
 			}
-			f, err := s.cache.newFileText(oldF.Name, text, true)
+			f, err := s.r.cache.newFileText(oldF.Name, text, true)
 			if err != nil {
 				s.Errors.Add(err)
 				continue
@@ -602,7 +594,7 @@ func (s *Snapshot) check(p *Package) {
 	}
 
 	// If we have the result from a previous snapshot load, use it.
-	if c := s.cache.types[p.BuildID]; c != nil {
+	if c := s.r.cache.types[p.BuildID]; c != nil {
 		p.Types = c.pkg
 		p.TypesInfo = c.info
 		return
@@ -614,7 +606,7 @@ func (s *Snapshot) check(p *Package) {
 			s.Errors.Add(err)
 		}
 		p.Types = tpkg
-		s.cache.types[p.BuildID] = &cachedTypeInfo{p.Types, nil}
+		s.r.cache.types[p.BuildID] = &cachedTypeInfo{p.Types, nil}
 		return
 	}
 
@@ -644,7 +636,7 @@ func (s *Snapshot) check(p *Package) {
 	p.Types = tpkg
 	p.TypesInfo = info
 
-	s.cache.types[p.BuildID] = &cachedTypeInfo{p.Types, p.TypesInfo}
+	s.r.cache.types[p.BuildID] = &cachedTypeInfo{p.Types, p.TypesInfo}
 }
 
 func opener(name string) func(string) (io.ReadCloser, error) {
