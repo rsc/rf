@@ -254,6 +254,9 @@ func (s *Snapshot) currentBytes(name string) []byte {
 	if f == nil {
 		return nil
 	}
+	if f.Deleted {
+		return []byte{}
+	}
 	return f.Text
 }
 

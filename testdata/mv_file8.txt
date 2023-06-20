@@ -11,6 +11,16 @@ func F() int { return 0 }
 -- q/q.go --
 package q
 -- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,6 +0,0 @@
+-// Comment
+-
+-package m
+-
+-// F is only fair.
+-func F() int { return 0 }
 diff old/q/z.go new/q/z.go
 --- old/q/z.go
 +++ new/q/z.go
