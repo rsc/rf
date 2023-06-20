@@ -8,12 +8,10 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
-	"go/scanner"
 	"go/token"
 	"go/types"
 	"io"
@@ -43,12 +41,11 @@ type Snapshot struct {
 	// It's keyed by short path (File.Name)
 	files map[string]*File
 
-	tcErrs []types.Error
+	Errors *ErrorList
 
-	r      *Refactor
-	cache  *buildCache
-	sizes  types.Sizes
-	errors int
+	r     *Refactor
+	cache *buildCache
+	sizes types.Sizes
 }
 
 type Package struct {
@@ -121,66 +118,14 @@ func (s *Snapshot) importToID(p *Package, imp string) string {
 	return imp
 }
 
-func (s *Snapshot) Errors() int {
-	return s.errors
-}
-
 func (s *Snapshot) ErrorAt(pos token.Pos, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	msg = strings.TrimRight(msg, "\n")
 	msg = strings.Replace(msg, "\n", "\n\t", -1)
 	if pos == token.NoPos {
-		fmt.Fprintf(s.r.Stderr, "%s\n", msg)
+		s.Errors.Add(&Error{Msg: msg})
 	} else {
-		fmt.Fprintf(s.r.Stderr, "%s: %s\n", s.Addr(pos), msg)
-	}
-	s.errors++
-}
-
-func (s *Snapshot) saveErrors(err error) {
-	switch err := err.(type) {
-	case scanner.ErrorList:
-		for _, e := range err {
-			s.saveErrors(e)
-		}
-		return
-	}
-	s.ErrorAt(token.NoPos, "%v", err)
-}
-
-func (s *Snapshot) typecheckError(err error) {
-	switch err := err.(type) {
-	case scanner.ErrorList:
-		for _, e := range err {
-			s.typecheckError(e)
-		}
-
-	case types.Error:
-		s.tcErrs = append(s.tcErrs, err)
-
-	default:
-		panic(fmt.Sprintf("typecheck %T", err))
-		s.saveErrors(err)
-	}
-}
-
-func (s *Snapshot) flushTypecheckErrors() {
-	count := make(map[string]int)
-	for _, e := range s.tcErrs {
-		count[e.Msg]++
-	}
-
-	for _, e := range s.tcErrs {
-		switch {
-		case count[e.Msg] > 3:
-			n := count[e.Msg]
-			count[e.Msg] = -1
-			e.Msg += fmt.Sprintf(" [× %d]", n)
-
-		case count[e.Msg] < 0:
-			continue
-		}
-		s.saveErrors(e)
+		s.Errors.Add(&Error{Pos: s.Position(pos), Msg: msg})
 	}
 }
 
@@ -194,10 +139,6 @@ func (s *Snapshot) Packages() []*Package {
 	return s.packages
 }
 
-// SnapError is returned instead of a Snapshot when there have been errors
-// printed to stderr.
-var SnapError = errors.New("snapshot errors")
-
 // Snapshots returns the latest Snapshot set. The caller should perform the same
 // refactoring on each Snapshot and then call r.Commit(). On the first call, it
 // loads all packages.
@@ -208,9 +149,6 @@ func (r *Refactor) Snapshots() ([]*Snapshot, error) {
 			return nil, err
 		}
 		r.snapshot = snap
-	}
-	if r.snapshot.Errors() > 0 {
-		return nil, SnapError
 	}
 	return []*Snapshot{r.snapshot}, nil
 }
@@ -268,6 +206,9 @@ func (r *Refactor) load() (*Snapshot, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
 
+	errs := new(ErrorList)
+	defer errs.flushOnPanic(r.Stderr)
+
 	fset := token.NewFileSet()
 	s := &Snapshot{
 		r:       r,
@@ -275,6 +216,7 @@ func (r *Refactor) load() (*Snapshot, error) {
 		edits:   make(map[string]*Edit),
 		files:   make(map[string]*File),
 		fset:    fset,
+		Errors:  errs,
 		cache: &buildCache{
 			r:     r,
 			fset:  fset,
@@ -359,7 +301,7 @@ func (r *Refactor) load() (*Snapshot, error) {
 			name = s.r.shortPath(name)
 			f, err := s.cache.newFile(name)
 			if err != nil {
-				s.saveErrors(err)
+				s.Errors.Add(err)
 				continue
 			}
 			p.Files = append(p.Files, f)
@@ -394,8 +336,11 @@ func (r *Refactor) load() (*Snapshot, error) {
 	}
 	s.packages = pkgs
 
-	if s.Errors() == 0 {
+	if s.Errors.Err() == nil {
 		s.typeCheck()
+	}
+	if err := s.Errors.Err(); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -413,7 +358,7 @@ func packagesOf(pkgs map[string]*Package) []*Package {
 
 // Apply applies edits to all Snapshots, type-checks the resulting files, and
 // creates a new set of current Snapshots. If there are any type errors in the
-// new Snapshots, it prints them to stderr and returns SnapError.
+// new Snapshots, it returns an ErrorList.
 func (r *Refactor) Apply() error {
 	oldS := r.snapshot
 	s := &Snapshot{
@@ -423,10 +368,12 @@ func (r *Refactor) Apply() error {
 		edits:   make(map[string]*Edit),
 		pkgByID: make(map[string]*Package),
 		files:   make(map[string]*File),
+		Errors:  oldS.Errors,
 		cache:   oldS.cache,
 		// exp:       s.exp, //  should use cache from now on
 		sizes: oldS.sizes,
 	}
+	defer s.Errors.flushOnPanic(r.Stderr)
 
 	for _, oldP := range oldS.packages {
 		if !oldP.InCurrentModule { // immutable w/ immutable dependencies
@@ -473,7 +420,7 @@ func (r *Refactor) Apply() error {
 			}
 			f, err := s.cache.newFileText(oldF.Name, text, true)
 			if err != nil {
-				s.saveErrors(err)
+				s.Errors.Add(err)
 				continue
 			}
 			p.Files = append(p.Files, f)
@@ -487,11 +434,11 @@ func (r *Refactor) Apply() error {
 		p.ImportIDs = s.pkgImportIDs(p)
 	}
 
-	if s.Errors() == 0 {
+	if s.Errors.Err() == nil {
 		s.typeCheck()
 	}
-	if s.Errors() > 0 {
-		return SnapError
+	if err := s.Errors.Err(); err != nil {
+		return err
 	}
 	r.snapshot = s
 	return nil
@@ -604,9 +551,7 @@ func (s *Snapshot) typeCheck() {
 		}
 	}
 
-	s.flushTypecheckErrors()
-
-	if len(waiting) > 0 && s.Errors() == 0 {
+	if len(waiting) > 0 && s.Errors.Err() == nil {
 		fmt.Println("type check stalled:")
 		for p, n := range waiting {
 			fmt.Println(p.PkgPath, n, rdeps[p])
@@ -666,7 +611,7 @@ func (s *Snapshot) check(p *Package) {
 	if !p.InCurrentModule && p.Export != "" {
 		tpkg, err := importer.ForCompiler(s.fset, "gc", opener(p.Export)).Import(p.PkgPath)
 		if err != nil {
-			s.saveErrors(err)
+			s.Errors.Add(err)
 		}
 		p.Types = tpkg
 		s.cache.types[p.BuildID] = &cachedTypeInfo{p.Types, nil}
@@ -674,7 +619,7 @@ func (s *Snapshot) check(p *Package) {
 	}
 
 	conf := &types.Config{
-		Error:    s.typecheckError,
+		Error:    s.Errors.Add,
 		Importer: &snapImporter{s, p},
 		Sizes:    s.sizes,
 	}

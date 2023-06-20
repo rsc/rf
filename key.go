@@ -35,7 +35,8 @@ func cmdKey(snap *refactor.Snapshot, args string) {
 		}
 		fixing = append(fixing, typ)
 	}
-	if snap.Errors() > 0 {
+	if snap.Errors.Err() != nil {
+		// Abort early.
 		return
 	}
 

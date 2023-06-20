@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -95,8 +96,8 @@ func run(rf *refactor.Refactor, script string) error {
 
 		snaps, err = rf.Snapshots()
 		if err != nil {
-			if err == refactor.SnapError && lastCmd == "" {
-				return fmt.Errorf("errors found before executing script")
+			if lastCmd == "" {
+				return wrapError(err, "errors found before executing script")
 			}
 			return err
 		}
@@ -116,29 +117,28 @@ func run(rf *refactor.Refactor, script string) error {
 			}
 
 			fn(snap, args)
-			if snap.Errors() > 0 {
-				return fmt.Errorf("errors found during: %s", lastCmd)
+			if err := snap.Errors.Err(); err != nil {
+				return wrapError(err, "errors found during: %s", lastCmd)
 			}
 
 			snap.Gofmt()
-			if snap.Errors() > 0 {
-				return fmt.Errorf("errors found during gofmt after: %s", lastCmd)
+			if err := snap.Errors.Err(); err != nil {
+				return wrapError(err, "errors found during gofmt after: %s", lastCmd)
 			}
 		}
 
-		if err := rf.Apply(); err == refactor.SnapError {
+		switch err := rf.Apply(); err.(type) {
+		case nil:
+		case *refactor.ErrorList:
 			// Show diff so errors are easier to understand.
-			snap, err := rf.MergeSnapshots()
-			if err != nil {
-				// TODO If the snapshots diverged, maybe we still want to show
-				// some diff that led to the original error?
-				return err
-			}
-			if d, err := snap.Diff(); err == nil {
+			snap, mergeErr := rf.MergeSnapshots()
+			if mergeErr != nil {
+				err = fmt.Errorf("%w\nalso merging snapshots failed:\n%w", err, mergeErr)
+			} else if d, err := snap.Diff(); err == nil {
 				rf.Stdout.Write(d)
 			}
-			return fmt.Errorf("errors found after executing: %s", lastCmd)
-		} else if err != nil {
+			return wrapError(err, "errors found after executing: %s", lastCmd)
+		default:
 			return fmt.Errorf("checking rewritten packages: %w", err)
 		}
 	}
@@ -162,6 +162,18 @@ func run(rf *refactor.Refactor, script string) error {
 		return nil
 	}
 	return snap.Write()
+}
+
+func wrapError(err error, f string, args ...interface{}) error {
+	var l *refactor.ErrorList
+	if errors.As(err, &l) {
+		// For an error list, print all of l first, followed by the new message,
+		// on the assumption that there may be many errors and the new message
+		// summarizes them.
+		return fmt.Errorf("%w\n%s", err, fmt.Sprintf(f, args...))
+	}
+	// Follow the normal error message wrapping convention.
+	return fmt.Errorf("%s: %w", fmt.Sprintf(f, args...), err)
 }
 
 func readLine(text string) (line, rest string, err error) {

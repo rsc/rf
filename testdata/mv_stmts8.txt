@@ -27,4 +27,4 @@ x.go:9:1: multiple control flow exits from moved code:
 	x.go:13:5: continue
 	x.go:16:5: break
 	x.go:18:1: implicit break
-ERROR: errors found during: mv F:/BEGIN/+0,/END/-0 New
+errors found during: mv F:/BEGIN/+0,/END/-0 New

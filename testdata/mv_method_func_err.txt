@@ -9,4 +9,4 @@ func (T) F(x int) int { return 1}
 var _ = (*T).F
 -- stderr --
 x.go:7:14: cannot rewrite pointer method value (with value receiver method) to function
-ERROR: errors found during: mv T.F tf
+errors found during: mv T.F tf

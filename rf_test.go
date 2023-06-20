@@ -124,6 +124,21 @@ func TestRun(t *testing.T) {
 			}
 
 			var stdout, stderr bytes.Buffer
+			defer func() {
+				// Flush stderr to the test log on panic.
+				if stderr.Len() == 0 {
+					return
+				}
+				if err := recover(); err != nil {
+					s := stderr.String()
+					for len(s) > 0 && s != "\n" {
+						var line string
+						line, s, _ = strings.Cut(s, "\n")
+						t.Logf("stderr: %s", line)
+					}
+					panic(err)
+				}
+			}()
 			rf, err := refactor.New(dir)
 			if err != nil {
 				t.Fatal(err)
@@ -132,7 +147,7 @@ func TestRun(t *testing.T) {
 			rf.Stderr = &stderr
 			rf.ShowDiff = true
 			if err := run(rf, string(ar.Comment)); err != nil {
-				fmt.Fprintf(rf.Stderr, "ERROR: %v\n", err)
+				fmt.Fprintf(rf.Stderr, "%v\n", err)
 			}
 
 			if *updateTestData {

@@ -11,4 +11,4 @@ func _() {
 }
 -- stderr --
 x.go:7:2: Y declared and not used
-ERROR: errors found before executing script
+errors found before executing script

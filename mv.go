@@ -65,7 +65,8 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 			continue
 		}
 	}
-	if snap.Errors() > 0 {
+	if snap.Errors.Err() != nil {
+		// Abort early.
 		return
 	}
 
