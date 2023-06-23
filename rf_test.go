@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/txtar"
@@ -70,6 +71,7 @@ func TestReadLine(t *testing.T) {
 }
 
 var updateTestData = flag.Bool("u", false, "update testdata instead of failing")
+var flagKeep = flag.Bool("keep", false, "keep temporary work directories")
 
 func TestRun(t *testing.T) {
 	files, err := filepath.Glob("testdata/*.txt")
@@ -87,7 +89,18 @@ func TestRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			dir := t.TempDir()
+			var dir string
+			if *flagKeep {
+				name := filepath.Base(file)
+				name = strings.TrimSuffix(name, filepath.Ext(name))
+				dir, err = os.MkdirTemp("", "rf-"+name)
+				if err != nil {
+					t.Fatal("creating work directory:", err)
+				}
+				t.Log("dir:", dir)
+			} else {
+				dir = t.TempDir()
+			}
 			if err := ioutil.WriteFile(filepath.Join(dir, "go.mod"), []byte("module m\n"), 0666); err != nil {
 				t.Fatal(err)
 			}
