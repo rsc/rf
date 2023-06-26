@@ -35,6 +35,7 @@ func cmdAddSub(snap *refactor.Snapshot, cmd, args string) {
 	switch item.Kind {
 	default:
 		snap.ErrorAt(token.NoPos, "TODO: %s after %s", cmd, item.Kind)
+		return
 
 	case refactor.ItemConst, refactor.ItemFunc, refactor.ItemType, refactor.ItemVar, refactor.ItemField:
 		stack := snap.SyntaxAt(item.Obj.Pos())
