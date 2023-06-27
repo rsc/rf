@@ -30,6 +30,7 @@ import (
 const (
 	debugLoad      = false
 	debugApply     = false
+	debugBuildIDs  = false
 	debugTypeCheck = false
 )
 
@@ -496,6 +497,14 @@ func (r *Refactor) load() ([]*Snapshot, error) {
 		allGraphs = append(allGraphs, g)
 	}
 
+	// Compute build IDs.
+	for _, g := range allGraphs {
+		errs.Add(r.setBuildIDs(g))
+	}
+	if err := errs.Err(); err != nil {
+		return nil, err
+	}
+
 	if debugLoad {
 		fmt.Println(len(allGraphs), "total merged graphs")
 		if true {
@@ -666,6 +675,9 @@ func (oldS *Snapshot) apply() (*Snapshot, error) {
 	s.packages = s.pkgGraph.packages()
 
 	if s.Errors.Err() == nil {
+		s.Errors.Add(s.r.setBuildIDs(s.pkgGraph))
+	}
+	if s.Errors.Err() == nil {
 		s.typeCheck()
 	}
 	if err := s.Errors.Err(); err != nil {
@@ -694,6 +706,41 @@ func (s *Snapshot) pkgImportsFromFiles(p *Package) []string {
 	}
 	sort.Strings(list)
 	return list
+}
+
+// setBuildIDs computes the build IDs for packages in g.
+func (r *Refactor) setBuildIDs(g *pkgGraph) error {
+	if debugBuildIDs {
+		fmt.Println("start build IDs")
+	}
+	return g.visitBottomUp(func(p *Package) error {
+		if p.BuildID != "" {
+			return nil
+		}
+		if p.PkgPath == "unsafe" {
+			p.BuildID = "unsafe"
+			return nil
+		}
+		if !p.InCurrentModule && p.Export != "" {
+			p.BuildID = p.ID
+			return nil
+		}
+		h := sha256.New()
+		for _, f := range p.Files {
+			if !f.Deleted {
+				h.Write([]byte(f.Hash))
+			}
+		}
+		for _, imp := range p.Imports {
+			pImp := g.byPath(imp)
+			h.Write([]byte(imp + "\x00" + pImp.BuildID + "\x00"))
+		}
+		p.BuildID = fmt.Sprintf("%x", h.Sum(nil))
+		if debugBuildIDs {
+			fmt.Println("computed BuildID", p.BuildID, "for", p.ID)
+		}
+		return nil
+	})
 }
 
 func (s *Snapshot) typeCheck() {
@@ -746,26 +793,6 @@ func (s *Snapshot) check(p *Package) {
 	if p.PkgPath == "unsafe" {
 		p.Types = types.Unsafe
 		return
-	}
-	if p.BuildID == "" {
-		if !p.InCurrentModule && p.Export != "" {
-			p.BuildID = p.ID
-		} else {
-			h := sha256.New()
-			for _, f := range p.Files {
-				if !f.Deleted {
-					h.Write([]byte(f.Hash))
-				}
-			}
-			for _, imp := range p.Imports {
-				pImp := s.pkgGraph.byPath(imp)
-				h.Write([]byte(imp + "\x00" + pImp.BuildID + "\x00"))
-			}
-			p.BuildID = fmt.Sprintf("%x", h.Sum(nil))
-		}
-		if debugTypeCheck {
-			fmt.Println("computed BuildID", p.BuildID, "for", p.ID)
-		}
 	}
 
 	// If we have the result from a previous snapshot load, use it.
