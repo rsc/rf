@@ -697,67 +697,21 @@ func (s *Snapshot) pkgImportsFromFiles(p *Package) []string {
 }
 
 func (s *Snapshot) typeCheck() {
-	// Build dependency graph.
-	ready := make(map[*Package]bool)
-	waiting := make(map[*Package]map[*Package]bool)
-	rdeps := make(map[*Package][]*Package)
-	for _, p := range s.packages {
-		if len(p.Imports) == 0 {
-			ready[p] = true
-		} else {
-			waiting[p] = make(map[*Package]bool)
-			for _, pkgPath := range p.Imports {
-				p1 := s.pkgGraph.byPath(pkgPath)
-				if p1 == nil {
-					s.ErrorAt(token.NoPos, "package %s imports %s, but %s isn't in the Snapshot", p, pkgPath, pkgPath)
-					continue
-				}
-				waiting[p][p1] = true
-				rdeps[p1] = append(rdeps[p1], p)
-			}
-		}
-	}
-	if s.Errors.Err() != nil {
-		return
-	}
-
-	// Diagnose cycles (well, at least one).
-	if c := s.pkgGraph.findCycle(true); c != nil {
-		s.ErrorAt(token.NoPos, "import cycle: %s", c)
-		return
-	}
-
-	// Type check.
 	if debugTypeCheck {
 		fmt.Println("start typecheck")
 	}
-	for len(ready) > 0 {
-		for p := range ready {
-			if debugTypeCheck {
-				fmt.Printf("typecheck %s %p for snapshot %p\n", p.ID, p, s)
-			}
-			s.check(p)
-			delete(ready, p)
-			if p.Types == nil {
-				// type-check failed - do not wake importers
-				continue
-			}
-			for _, p1 := range rdeps[p] {
-				delete(waiting[p1], p)
-				if len(waiting[p1]) == 0 {
-					delete(waiting, p1)
-					ready[p1] = true
-				}
-			}
+	err := s.pkgGraph.visitBottomUp(func(p *Package) error {
+		if debugTypeCheck {
+			fmt.Printf("typecheck %s %p for snapshot %p\n", p.ID, p, s)
 		}
-	}
-
-	if len(waiting) > 0 && s.Errors.Err() == nil {
-		fmt.Println("type check stalled:")
-		for p, n := range waiting {
-			fmt.Println(p.PkgPath, n, rdeps[p])
+		s.check(p)
+		if p.Types == nil {
+			return visitStop
 		}
-		panic("type check did not complete")
+		return nil
+	})
+	if err != nil {
+		s.Errors.Add(err)
 	}
 }
 

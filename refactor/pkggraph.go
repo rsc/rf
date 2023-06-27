@@ -221,6 +221,80 @@ func (c *pkgCycle) String() string {
 	return b.String()
 }
 
+type errVisitStop struct{}
+
+func (errVisitStop) Error() string { return "visit stop" }
+
+var visitStop errVisitStop
+
+func (g *pkgGraph) visitBottomUp(visit func(p *Package) error) error {
+	// Diagnose cycles (well, at least one).
+	if c := g.findCycle(true); c != nil {
+		return fmt.Errorf("import cycle: %s", c)
+	}
+
+	// Build dependency graph.
+	var errs ErrorList
+	ready := make(map[*Package]bool)
+	waiting := make(map[*Package]map[*Package]bool)
+	rdeps := make(map[*Package][]*Package)
+	for _, p := range g.packages() {
+		if len(p.Imports) == 0 {
+			ready[p] = true
+		} else {
+			waiting[p] = make(map[*Package]bool)
+			for _, pkgPath := range p.Imports {
+				p1 := g.byPath(pkgPath)
+				if p1 == nil {
+					errs.Add(fmt.Errorf("package %s imports %s, but %s isn't in the package graph", p, pkgPath, pkgPath))
+					continue
+				}
+				waiting[p][p1] = true
+				rdeps[p1] = append(rdeps[p1], p)
+			}
+		}
+	}
+	if err := errs.Err(); err != nil {
+		return err
+	}
+
+	// Visit.
+	stopped := false
+	for len(ready) > 0 {
+		for p := range ready {
+			err := visit(p)
+			delete(ready, p)
+			if err != nil {
+				// Visit failed - do not wake reverse dependencies, but do keep
+				// visiting other packages.
+				stopped = true
+				if err != visitStop {
+					errs.Add(err)
+				}
+				continue
+			}
+			for _, p1 := range rdeps[p] {
+				delete(waiting[p1], p)
+				if len(waiting[p1]) == 0 {
+					delete(waiting, p1)
+					ready[p1] = true
+				}
+			}
+		}
+	}
+
+	// Self-check.
+	if len(waiting) > 0 && !stopped {
+		fmt.Println("visit stalled:")
+		for p, n := range waiting {
+			fmt.Println(p.PkgPath, n, rdeps[p])
+		}
+		panic("visit did not complete")
+	}
+
+	return errs.Err()
+}
+
 func (g *pkgGraph) dump(w io.Writer) {
 	pkgs := g.packages()
 	for _, pkg := range pkgs {
