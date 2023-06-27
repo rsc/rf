@@ -46,28 +46,21 @@ func inScope(name string, obj types.Object) posChecker {
 	}
 }
 
-func cmdMv(snap *refactor.Snapshot, args string) {
+func cmdMv(snap *refactor.Snapshot, args string) error {
 	args = strings.TrimSpace(args)
 	if args == "" {
-		snap.ErrorAt(token.NoPos, "usage: mv old... new")
-		return
+		return newErrUsage("usage: mv old... new")
 	}
 
 	items, _ := snap.EvalList(args)
 	if len(items) < 2 {
-		snap.ErrorAt(token.NoPos, "usage: mv old... new")
-		return
+		return newErrUsage("usage: mv old... new")
 	}
 
 	for _, item := range items[:len(items)-1] {
 		if item.Kind == refactor.ItemNotFound {
-			snap.ErrorAt(token.NoPos, "cannot find %s", item.Name)
-			continue
+			return newErrPrecondition("%s not found", item.Name)
 		}
-	}
-	if snap.Errors.Err() != nil {
-		// Abort early.
-		return
 	}
 
 	srcs, dst := items[:len(items)-1], items[len(items)-1]
@@ -83,8 +76,7 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 			if dstPkg == nil {
 				p, err := snap.CreatePackage(dst.Name)
 				if err != nil {
-					snap.ErrorAt(token.NoPos, "mv ..., %s: %v", dst.Name, err)
-					return
+					return fmt.Errorf("mv ..., %s: %w", dst.Name, err)
 				}
 				dstPkg = p
 			}
@@ -101,14 +93,16 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 				}
 				if dstPkg == nil {
 					// TODO: Load on demand.
-					snap.ErrorAt(token.NoPos, "unknown package %s", dst.Name)
-					return
+					return newErrPrecondition("unknown package %s", dst.Name)
 				}
 				dst.Name = path.Base(dst.Name)
 			}
 		}
 
 		for _, item := range srcs {
+			if item.Kind == refactor.ItemNotFound {
+				return newErrPrecondition("%s not found", item.Name)
+			}
 			if item.Outer == nil && item.Kind != refactor.ItemDir {
 				// ok
 				continue
@@ -121,21 +115,23 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 			if dst.Kind == refactor.ItemFile {
 				what = "file"
 			}
-			snap.ErrorAt(token.NoPos, "cannot move %s to %s %s", item.Kind, what, dst.Name)
-			return
+			return newErrPrecondition("cannot move %s to %s %s", item.Kind, what, dst.Name)
 		}
 
 		mvCode(snap, srcs, dst, dstPkg)
-		return
+		return nil
 	}
 
 	// Otherwise, renaming to program identifier, which must not exist.
 	if len(items) != 2 {
-		snap.ErrorAt(token.NoPos, "cannot move multiple items to %s", dst.Name)
-		return
+		return newErrUsage("cannot move multiple items to %s", dst.Name)
 	}
 
 	old, newItem := items[0], items[1]
+
+	if old.Kind == refactor.ItemNotFound {
+		return newErrPrecondition("%s not found", old.Name)
+	}
 
 	if old.Kind == refactor.ItemPos && newItem.Kind == refactor.ItemPos {
 		// Text move.
@@ -143,7 +139,7 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 		snap.DeleteAt(old.Pos, old.End)
 		snap.DeleteAt(newItem.Pos, newItem.End)
 		snap.InsertAt(newItem.End, string(text))
-		return
+		return nil
 	}
 
 	var newOuter *refactor.Item
@@ -152,8 +148,7 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 	if ok {
 		newOuter = snap.Eval(newPrefix)
 		if newOuter == nil {
-			snap.ErrorAt(token.NoPos, "cannot find destination %s", newPrefix)
-			return
+			return newErrPrecondition("cannot find destination %s", newPrefix)
 		}
 	} else {
 		newName = newItem.Name
@@ -161,36 +156,35 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 
 	if old.Kind == refactor.ItemPos && newOuter == nil {
 		mvStmt(snap, old, newName)
-		return
+		return nil
 	}
 
 	// Check that newName is a valid identifier.
 	// (Arbitrary syntax would make simple string search for dots invalid, among other problems.)
 	if !isGoIdent.MatchString(newName) {
-		snap.ErrorAt(token.NoPos, "malformed replacement: not a valid Go identifier: %s", newName)
-		return
+		return newErrUsage("malformed replacement: not a valid Go identifier: %s", newName)
 	}
 
 	// Rename of global.
 	if old.Outer == nil && newOuter == nil {
 		if newItem.Kind != refactor.ItemNotFound {
 			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newName)
-			return
+			return nil
 		}
 		rewriteDefn(snap, old, newName)
 		rewriteUses(snap, old, newName, notInScope(newName))
-		return
+		return nil
 	}
 
 	// Rename of local variable, struct field, or method.
 	if old.Outer != nil && newOuter != nil && old.Outer.Obj == newOuter.Obj {
 		if newItem.Kind != refactor.ItemNotFound { // TODO
 			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
-			return
+			return nil
 		}
 		rewriteDefn(snap, old, newName)
 		rewriteUses(snap, old, newName, nil)
-		return
+		return nil
 	}
 
 	// Rename var (global or function-local) to new field in global var of type struct.
@@ -221,7 +215,7 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 				addStructField(snap, doc, tvar.Pos(), structPos, newName, old.Obj.Type())
 			}
 			rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
-			return
+			return nil
 		}
 	}
 
@@ -232,7 +226,7 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 		newOuter != nil && newOuter.Kind == refactor.ItemType {
 		if newItem != nil { // TODO
 			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
-			return
+			return nil
 		}
 		if _, ok := newOuter.Obj.(*types.TypeName); ok {
 			// TODO check method set for newName
@@ -245,21 +239,20 @@ func cmdMv(snap *refactor.Snapshot, args string) {
 	if old.Kind == refactor.ItemMethod && old.Outer.Outer == nil && old.Outer.Kind == refactor.ItemType && newOuter == nil {
 		if newItem.Kind != refactor.ItemNotFound { // TODO
 			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
-			return
+			return nil
 		}
 		methodToFunc(snap, old.Obj.(*types.Func), newName)
-		return
+		return nil
 	}
 
 	if old.Outer == nil && newItem != nil && newTop != nil && newTop.Obj != nil {
 		rewriteUses(snap, old, newPath, inScope(newTop.Name, newTop.Obj))
-		return
+		return nil
 	}
 
 	// TODO: Rename global to variable in function.
 
-	snap.ErrorAt(token.NoPos, "unimplemented replacement: %v -> %v . %v [%v]", old, newOuter, newName, newItem)
-	return
+	return fmt.Errorf("unimplemented replacement: %v -> %v . %v [%v]", old, newOuter, newName, newItem)
 }
 
 func rewriteDefn(snap *refactor.Snapshot, old *refactor.Item, new string) {

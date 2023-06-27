@@ -8,18 +8,22 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
-	"go/token"
 	"go/types"
 	"strings"
 
 	"rsc.io/rf/refactor"
 )
 
-func cmdInject(snap *refactor.Snapshot, args string) {
+func cmdInject(snap *refactor.Snapshot, args string) error {
 	items, _ := snap.EvalList(args)
 	if len(items) < 2 {
-		snap.ErrorAt(token.NoPos, "usage: inject Var Func...")
-		return
+		return newErrUsage("inject Var Func...")
+	}
+
+	for _, item := range items {
+		if item.Kind == refactor.ItemNotFound {
+			return newErrPrecondition("%s not found", item.Name)
+		}
 	}
 
 	targetObj := items[0].Obj
@@ -203,4 +207,6 @@ func cmdInject(snap *refactor.Snapshot, args string) {
 			}
 		})
 	})
+
+	return nil
 }

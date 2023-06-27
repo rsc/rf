@@ -5,6 +5,7 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -13,7 +14,7 @@ import (
 	"rsc.io/rf/refactor"
 )
 
-func cmdInline(snap *refactor.Snapshot, args string) {
+func cmdInline(snap *refactor.Snapshot, args string) error {
 	args = strings.TrimLeft(args, " \t")
 	var rm map[types.Object]bool
 	if flag, rest, _ := cutAny(args, " \t"); flag == "-rm" {
@@ -23,8 +24,7 @@ func cmdInline(snap *refactor.Snapshot, args string) {
 
 	items, _ := snap.EvalList(args)
 	if len(items) == 0 {
-		snap.ErrorAt(token.NoPos, "usage: inline [-rm] decl...\n")
-		return
+		return newErrUsage("inline [-rm] decl...")
 	}
 
 	fix := make(map[types.Object]ast.Expr)
@@ -35,8 +35,9 @@ func cmdInline(snap *refactor.Snapshot, args string) {
 		}
 		switch item.Kind {
 		default:
-			snap.ErrorAt(token.NoPos, "inline %s: %v not supported", item.Name, item.Kind)
-			continue
+			return fmt.Errorf("inline %s: %v not supported", item.Name, item.Kind)
+		case refactor.ItemNotFound:
+			return newErrPrecondition("%s not found", item.Name)
 		case refactor.ItemConst, refactor.ItemType, refactor.ItemVar:
 			obj := item.Obj
 			stack := snap.SyntaxAt(obj.Pos())
@@ -84,6 +85,7 @@ func cmdInline(snap *refactor.Snapshot, args string) {
 	}
 
 	// TODO: Should we inline in other packages?
+	return nil
 }
 
 func inlineValues(snap *refactor.Snapshot, fix map[types.Object]ast.Expr) {

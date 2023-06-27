@@ -6,17 +6,15 @@ package main
 
 import (
 	"go/ast"
-	"go/token"
 	"go/types"
 
 	"rsc.io/rf/refactor"
 )
 
-func cmdKey(snap *refactor.Snapshot, args string) {
+func cmdKey(snap *refactor.Snapshot, args string) error {
 	items, _ := snap.EvalList(args)
 	if len(items) == 0 {
-		snap.ErrorAt(token.NoPos, "usage: key StructType...")
-		return
+		return newErrUsage("key StructType...")
 	}
 
 	var fixing []types.Type
@@ -24,23 +22,25 @@ func cmdKey(snap *refactor.Snapshot, args string) {
 		if item == nil {
 			continue
 		}
+		if item.Kind == refactor.ItemNotFound {
+			return newErrPrecondition("%s not found", item.Name)
+		}
 		if item.Kind != refactor.ItemType {
-			snap.ErrorAt(token.NoPos, "%s is not a type", item.Name)
-			continue
+			return newErrPrecondition("%s is not a type", item.Name)
 		}
 		typ := item.Obj.(*types.TypeName).Type().(*types.Named)
 		if _, ok := typ.Underlying().(*types.Struct); !ok {
-			snap.ErrorAt(token.NoPos, "%s is not a struct type", item.Name)
-			continue
+			return newErrPrecondition("%s is not a struct type", item.Name)
 		}
 		fixing = append(fixing, typ)
 	}
 	if snap.Errors.Err() != nil {
 		// Abort early.
-		return
+		return nil
 	}
 
 	keyLiterals(snap, fixing)
+	return nil
 }
 
 func keyLiterals(snap *refactor.Snapshot, list []types.Type) {

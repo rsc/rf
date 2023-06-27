@@ -47,7 +47,7 @@ func main() {
 	}
 }
 
-var cmds = map[string]func(*refactor.Snapshot, string){
+var cmds = map[string]func(*refactor.Snapshot, string) error{
 	"add":        cmdAdd,
 	"sub":        cmdSub,
 	"debug":      cmdDebug,
@@ -116,7 +116,10 @@ func run(rf *refactor.Refactor, script string) error {
 				return fmt.Errorf("no types in target")
 			}
 
-			fn(snap, args)
+			if err := fn(snap, args); err != nil {
+				return err
+			}
+
 			if err := snap.Errors.Err(); err != nil {
 				return wrapError(err, "errors found during: %s", lastCmd)
 			}
@@ -341,7 +344,7 @@ func cutLast(s, sep string) (before, after string, ok bool) {
 	return s, "", false
 }
 
-func cmdDebug(snap *refactor.Snapshot, text string) {
+func cmdDebug(snap *refactor.Snapshot, text string) error {
 	for _, f := range strings.Fields(text) {
 		key, val, ok := cut(f, "=")
 		if !ok {
@@ -349,4 +352,5 @@ func cmdDebug(snap *refactor.Snapshot, text string) {
 		}
 		snap.Refactor().Debug[key] = val
 	}
+	return nil
 }

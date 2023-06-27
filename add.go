@@ -5,6 +5,7 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"strings"
@@ -12,30 +13,31 @@ import (
 	"rsc.io/rf/refactor"
 )
 
-func cmdAdd(snap *refactor.Snapshot, args string) {
-	cmdAddSub(snap, "add", args)
+func cmdAdd(snap *refactor.Snapshot, args string) error {
+	return cmdAddSub(snap, "add", args)
 }
 
-func cmdSub(snap *refactor.Snapshot, args string) {
-	cmdAddSub(snap, "sub", args)
+func cmdSub(snap *refactor.Snapshot, args string) error {
+	return cmdAddSub(snap, "sub", args)
 }
 
-func cmdAddSub(snap *refactor.Snapshot, cmd, args string) {
+func cmdAddSub(snap *refactor.Snapshot, cmd, args string) error {
 	item, expr, text := snap.EvalNext(args)
 	if expr == "" {
-		snap.ErrorAt(token.NoPos, "usage: %s address text...\n", cmd)
-		return
+		return newErrUsage("%s address text...", cmd)
 	}
 	if item == nil {
 		// Error already reported.
-		return
+		return nil
 	}
 
 	var pos, end token.Pos
 	switch item.Kind {
 	default:
-		snap.ErrorAt(token.NoPos, "TODO: %s after %s", cmd, item.Kind)
-		return
+		return fmt.Errorf("TODO: %s after %s", cmd, item.Kind)
+
+	case refactor.ItemNotFound:
+		return newErrPrecondition("%s not found", item.Name)
 
 	case refactor.ItemConst, refactor.ItemFunc, refactor.ItemType, refactor.ItemVar, refactor.ItemField:
 		stack := snap.SyntaxAt(item.Obj.Pos())
@@ -65,8 +67,7 @@ func cmdAddSub(snap *refactor.Snapshot, cmd, args string) {
 			}
 		}
 		if dstPkg == nil {
-			snap.ErrorAt(token.NoPos, "no such directory %s", item.Name)
-			return
+			return fmt.Errorf("no such directory %s", item.Name)
 		}
 		pos, end = snap.FileRange(dstPkg.Files[0].Syntax.Pos())
 
@@ -84,4 +85,5 @@ func cmdAddSub(snap *refactor.Snapshot, cmd, args string) {
 		text += "\n"
 	}
 	snap.InsertAt(end, text)
+	return nil
 }

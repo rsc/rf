@@ -14,10 +14,10 @@ import (
 	"rsc.io/rf/refactor"
 )
 
-func cmdRm(snap *refactor.Snapshot, args string) {
+func cmdRm(snap *refactor.Snapshot, args string) error {
 	items, _ := snap.EvalList(args)
 	if len(items) == 0 {
-		snap.ErrorAt(token.NoPos, "usage: rm old...\n")
+		return newErrUsage("rm old...")
 	}
 	rm := make(map[types.Object]bool)
 	for _, item := range items {
@@ -26,7 +26,9 @@ func cmdRm(snap *refactor.Snapshot, args string) {
 		}
 		switch item.Kind {
 		default:
-			snap.ErrorAt(token.NoPos, "rm %s: %v not supported", item.Name, item.Kind)
+			return fmt.Errorf("rm %s: %v not supported", item.Name, item.Kind)
+		case refactor.ItemNotFound:
+			return newErrPrecondition("%s not found", item.Name)
 		case refactor.ItemPos:
 			snap.DeleteAt(item.Pos, item.End)
 		case refactor.ItemConst, refactor.ItemField, refactor.ItemFunc, refactor.ItemMethod, refactor.ItemType, refactor.ItemVar:
@@ -34,6 +36,7 @@ func cmdRm(snap *refactor.Snapshot, args string) {
 		}
 	}
 	removeDecls(snap, rm)
+	return nil
 }
 
 func removeDecls(snap *refactor.Snapshot, rm map[types.Object]bool) {

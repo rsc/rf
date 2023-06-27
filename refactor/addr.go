@@ -282,7 +282,7 @@ func evalScope(scope *types.Scope, expr string) *Item {
 		log.Fatalf("%s is a %T, unimplemented", expr, obj)
 		return nil
 	case nil:
-		return &Item{Kind: ItemNotFound}
+		return &Item{Kind: ItemNotFound, Name: expr}
 	case *types.TypeName:
 		return &Item{Kind: ItemType, Obj: obj}
 	case *types.Const:

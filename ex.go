@@ -37,38 +37,28 @@ type example struct {
 	new ast.Node
 }
 
-func cmdEx(snap *refactor.Snapshot, text string) {
+func cmdEx(snap *refactor.Snapshot, text string) error {
 	ex, err := parseEx(snap, text, false)
 	if err != nil {
-		snap.ErrorAt(token.NoPos, "ex: %v", err)
-		return
-	}
-	if ex == nil {
-		// Trust that parseEx printed an error.
-		return
+		return err
 	}
 	if err := ex.check(); err != nil {
-		snap.ErrorAt(token.NoPos, "ex: %v", err)
-		return
+		return err
 	}
 	ex.run()
+	return nil
 }
 
-func cmdTypeAssert(snap *refactor.Snapshot, text string) {
+func cmdTypeAssert(snap *refactor.Snapshot, text string) error {
 	ex, err := parseEx(snap, text, true)
 	if err != nil {
-		snap.ErrorAt(token.NoPos, "ex: %v", err)
-		return
-	}
-	if ex == nil {
-		// Trust that parseEx printed an error.
-		return
+		return err
 	}
 	if err := ex.check(); err != nil {
-		snap.ErrorAt(token.NoPos, "ex: %v", err)
-		return
+		return err
 	}
 	ex.runTypeAssert()
+	return nil
 }
 
 func cutGo(text, sep string) (before, after string, ok bool, err error) {
@@ -80,13 +70,11 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 	fset := token.NewFileSet()
 	text = strings.TrimSpace(text)
 	if text == "" {
-		snap.ErrorAt(token.NoPos, "ex: missing block")
-		return nil, nil
+		return nil, newErrUsage("missing block")
 	}
 	i := strings.Index(text, "{")
 	if i < 0 || text[len(text)-1] != '}' {
-		snap.ErrorAt(token.NoPos, "ex: malformed block - missing { }")
-		return nil, nil
+		return nil, newErrUsage("malformed block - missing { }")
 	}
 	before := strings.TrimSpace(text[:i])
 
@@ -95,13 +83,13 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 	if before != "" {
 		targets = nil
 		items, _ := snap.EvalList(before)
-		ok := true
 	Items:
 		for _, item := range items {
+			if item.Kind == refactor.ItemNotFound {
+				return nil, newErrPrecondition("%s not found", item.Name)
+			}
 			if item.Kind != refactor.ItemDir {
-				snap.ErrorAt(token.NoPos, "ex: %s is not a package", item.Name)
-				ok = false
-				continue
+				return nil, newErrPrecondition("%s is not a package", item.Name)
 			}
 			pkgPath := item.Name
 			if pkgPath == "." || strings.HasPrefix(pkgPath, "./") || strings.HasPrefix(pkgPath, "../") {
@@ -113,17 +101,12 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 					continue Items
 				}
 			}
-			snap.ErrorAt(token.NoPos, "ex: cannot find package %s", pkgPath)
-			ok = false
-		}
-		if !ok {
-			return nil, nil
+			return nil, newErrPrecondition("cannot find package %s", pkgPath)
 		}
 	}
 	text = strings.TrimSpace(text[i+1 : len(text)-1])
 	if text == "" {
-		snap.ErrorAt(token.NoPos, "ex: empty block")
-		return nil, nil
+		return nil, newErrUsage("empty block")
 	}
 
 	var buf bytes.Buffer
@@ -147,15 +130,15 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 		}
 		switch kw := strings.Fields(stmt)[0]; kw {
 		case "package", "func", "const":
-			return nil, fmt.Errorf("%s declaration not allowed", kw)
+			return nil, newErrUsage("%s declaration not allowed", kw)
 
 		case "defer", "for", "go", "if", "return", "select", "switch":
-			return nil, fmt.Errorf("%s statement not allowed", kw)
+			return nil, newErrUsage("%s statement not allowed", kw)
 
 		case "import":
 			file, err := parser.ParseFile(fset, "ex.go", "package p;"+stmt, 0)
 			if err != nil {
-				return nil, fmt.Errorf("parsing %s: %v", stmt, err)
+				return nil, newErrUsage("parsing %s: %v", stmt, err)
 			}
 			imp := file.Imports[0]
 			pkg := importPath(imp)
@@ -166,16 +149,16 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 				}
 			}
 			if !have {
-				return nil, fmt.Errorf("import %q not available", pkg)
+				return nil, newErrUsage("import %q not available", pkg)
 			}
 			if !importOK {
-				return nil, fmt.Errorf("parsing %s: import too late", stmt)
+				return nil, newErrUsage("parsing %s: import too late", stmt)
 			}
 			fmt.Fprintf(&buf, "%s\n", stmt)
 
 		case "type", "var":
 			if _, err := parser.ParseExpr("func() {" + stmt + "}"); err != nil {
-				return nil, fmt.Errorf("parsing %s: %v", stmt, err)
+				return nil, newErrUsage("parsing %s: %v", stmt, err)
 			}
 			body()
 			fmt.Fprintf(&buf, "%s\n", stmt)
@@ -183,10 +166,10 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 		case "avoid", "strict", "implicit":
 			stmt = strings.TrimSpace(strings.TrimPrefix(stmt, kw))
 			if stmt == "" {
-				return nil, fmt.Errorf("missing arguments for %s", kw)
+				return nil, newErrUsage("missing arguments for %s", kw)
 			}
 			if _, err := parser.ParseExpr("f(" + stmt + ")"); err != nil {
-				return nil, fmt.Errorf("parsing %s: %v", stmt, err)
+				return nil, newErrUsage("parsing %s: %v", stmt, err)
 			}
 			body()
 			fmt.Fprintf(&buf, "__%s__(%s)\n", kw, stmt)
@@ -197,22 +180,22 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 			// because we already processed it once.
 			before, after, ok, _ := cutGo(stmt, "->")
 			if !ok {
-				return nil, fmt.Errorf("parsing: %s: missing -> in rewrite", stmt)
+				return nil, newErrUsage("parsing: %s: missing -> in rewrite", stmt)
 			}
 			before = strings.TrimSpace(before)
 			after = strings.TrimSpace(after)
 			if before == "" {
-				return nil, fmt.Errorf("missing pattern in example: %s", stmt)
+				return nil, newErrUsage("missing pattern in example: %s", stmt)
 			}
 			if after == "" {
-				return nil, fmt.Errorf("missing substitution in example: %s", stmt)
+				return nil, newErrUsage("missing substitution in example: %s", stmt)
 			}
 
 			body()
 			if _, err := parser.ParseExpr("func() {" + before + "}"); err != nil {
 				before = "type _ " + before
 				if _, err := parser.ParseExpr("func() { " + before + "}"); err != nil {
-					return nil, fmt.Errorf("parsing %s: %v", stmt, err)
+					return nil, newErrUsage("parsing %s: %v", stmt, err)
 				}
 			}
 			fmt.Fprintf(&buf, "{\n")
@@ -222,7 +205,7 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 				if err != nil && !isTypeAssert {
 					after = "type _ " + after
 					if _, err := parser.ParseExpr("func() { " + after + "}"); err != nil {
-						return nil, fmt.Errorf("parsing %s: %v", stmt, err)
+						return nil, newErrUsage("parsing %s: %v", stmt, err)
 					}
 				}
 				if isTypeAssert {
@@ -236,7 +219,7 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 						}
 					}
 					if !foundAssert {
-						return nil, fmt.Errorf("parsing %s: arrow must be followed by name.(T)", stmt)
+						return nil, newErrUsage("parsing %s: arrow must be followed by name.(T)", stmt)
 					}
 				}
 				fmt.Fprintf(&buf, "{\n/* %s -> */ %s\n}\n", before, after)
@@ -245,7 +228,7 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 		}
 	}
 	if importOK {
-		return nil, fmt.Errorf("no example rewrites")
+		return nil, newErrUsage("no example rewrites")
 	}
 	fmt.Fprintf(&buf, "}\n")
 
@@ -268,7 +251,7 @@ func (ex *exArgs) check() error {
 		return fmt.Errorf("internal error: %v\ncode:\n%s", err, ex.code)
 	}
 
-	var errors int
+	var errs refactor.ErrorList
 	conf := &types.Config{
 		Error: func(err error) {
 			if strings.HasSuffix(err.Error(), " is not used") {
@@ -281,18 +264,17 @@ func (ex *exArgs) check() error {
 			if strings.HasSuffix(err.Error(), " (type) is not an expression") {
 				return
 			}
-			errors++
 			if err, ok := err.(types.Error); ok {
 				if codeLines == nil {
 					codeLines = strings.Split(ex.code, "\n")
 				}
 				posn := snap.Fset().Position(err.Pos)
 				if posn.Filename == "ex.go" && posn.Line >= 1 && posn.Line < len(codeLines) {
-					snap.ErrorAt(token.NoPos, "ex: %s\n%s", err.Msg, codeLines[posn.Line-1])
+					errs.Add(fmt.Errorf("%s\n%s", err.Msg, codeLines[posn.Line-1]))
 					return
 				}
 			}
-			snap.ErrorAt(token.NoPos, "%v", err)
+			errs.Add(err)
 		},
 		Importer: importerFunc(func(pkg string) (*types.Package, error) {
 			for _, p := range snap.Packages() {
@@ -307,8 +289,8 @@ func (ex *exArgs) check() error {
 	check := types.NewChecker(conf, snap.Fset(), ex.patternPkg.Types, ex.patternPkg.TypesInfo)
 	err = check.Files([]*ast.File{f})
 	_ = err // already handled in conf.Error
-	if errors != 0 {
-		return fmt.Errorf("errors in example")
+	if err := errs.Err(); err != nil {
+		return newErrPrecondition("errors in example:\n%s", err.Error())
 	}
 
 	var avoids []types.Object
@@ -329,14 +311,14 @@ func (ex *exArgs) check() error {
 					var obj types.Object
 					switch n := n.(type) {
 					default:
-						return fmt.Errorf("cannot %s %T", kw, n)
+						return newErrUsage("cannot %s %T", kw, n)
 					case *ast.Ident:
 						obj = info.Uses[n]
 					case *ast.SelectorExpr:
 						obj = info.Uses[n.Sel]
 					}
 					if obj == nil {
-						return fmt.Errorf("cannot find %s %v", kw, astString(snap.Fset(), n))
+						return newErrPrecondition("cannot find %s %v", kw, astString(snap.Fset(), n))
 					}
 					switch kw {
 					case "avoid":
@@ -346,7 +328,7 @@ func (ex *exArgs) check() error {
 							stricts[obj] = true
 							break
 						}
-						return fmt.Errorf("%s: %v is not a pattern variable", kw, obj)
+						return newErrPrecondition("%s: %v is not a pattern variable", kw, obj)
 					case "implicit":
 						// TODO(mdempsky): Support multi-valued expressions?
 						if obj, ok := obj.(*types.Var); ok && obj.Pos() >= codePos {
@@ -355,7 +337,7 @@ func (ex *exArgs) check() error {
 								break
 							}
 						}
-						return fmt.Errorf("%s: %v is not a single-parameter function-typed variable", kw, obj)
+						return newErrPrecondition("%s: %v is not a single-parameter function-typed variable", kw, obj)
 					default:
 						panic("unreachable")
 					}
@@ -386,7 +368,7 @@ func (ex *exArgs) check() error {
 		if ex.typeAssert {
 			x, ok := pattern.(*ast.BinaryExpr)
 			if !ok || x.Op != token.EQL {
-				return fmt.Errorf("invalid typeassert condition (must be ==): %v", astString(snap.Fset(), pattern))
+				return newErrUsage("invalid typeassert condition (must be ==): %v", astString(snap.Fset(), pattern))
 			}
 		}
 		rewrites = append(rewrites, example{pattern, subst})

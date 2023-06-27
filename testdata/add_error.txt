@@ -1,0 +1,5 @@
+add T test
+-- m.go --
+package m
+-- stderr --
+T not found

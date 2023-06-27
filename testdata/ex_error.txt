@@ -4,7 +4,6 @@ package p
 
 var _ = 3+2+1
 -- stderr --
-ex: invalid operation: i (variable of type int) is not an interface
-	/* i+1 -> */ i.(float64)
-ex: errors in example
-errors found during: ex { var i int; i+1 -> i.(float64) }
+errors in example:
+invalid operation: i (variable of type int) is not an interface
+/* i+1 -> */ i.(float64)
