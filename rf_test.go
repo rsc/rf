@@ -123,6 +123,24 @@ func TestRun(t *testing.T) {
 				}
 			}
 
+			// Process flags in the comment.
+			var flags flags
+			flagSet := flag.NewFlagSet(filepath.Base(file), flag.ContinueOnError)
+			flags.register(flagSet)
+			lines := bytes.Split(ar.Comment, []byte("\n"))
+			var script strings.Builder
+			for _, line := range lines {
+				if len(line) > 0 && line[0] == '-' {
+					// Flags
+					if err := flagSet.Parse(strings.Fields(string(line))); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					script.Write(line)
+					script.WriteByte('\n')
+				}
+			}
+
 			var stdout, stderr bytes.Buffer
 			defer func() {
 				// Flush stderr to the test log on panic.
@@ -145,8 +163,9 @@ func TestRun(t *testing.T) {
 			}
 			rf.Stdout = &stdout
 			rf.Stderr = &stderr
+			flags.apply(rf)
 			rf.ShowDiff = true
-			if err := run(rf, string(ar.Comment)); err != nil {
+			if err := run(rf, script.String()); err != nil {
 				fmt.Fprintf(rf.Stderr, "%v\n", err)
 			}
 

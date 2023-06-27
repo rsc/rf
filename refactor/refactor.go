@@ -20,6 +20,11 @@ type Refactor struct {
 	ShowDiff bool
 	Debug    map[string]string // debugging settings
 
+	// Configs is a set of build configurations to refactor.
+	// New returns just the default build configuration,
+	// but a caller can overwrite this.
+	Configs Configs
+
 	dir     string
 	modRoot string
 	modPath string
@@ -64,10 +69,11 @@ func New(dir string) (*Refactor, error) {
 	dir = d
 
 	r := &Refactor{
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Debug:  make(map[string]string),
-		dir:    dir,
+		Stdout:  os.Stdout,
+		Stderr:  os.Stderr,
+		Debug:   make(map[string]string),
+		Configs: Configs{c: []Config{{}}},
+		dir:     dir,
 	}
 	fset := token.NewFileSet()
 	r.cache = &buildCache{

@@ -1,0 +1,31 @@
+# Test that refactoring applies across GOOS/GOARCHes.
+-allplat
+
+mv X Y
+-- m.go --
+package m
+-- m_linux.go --
+package m
+
+var X = 1
+-- m_darwin.go --
+package m
+
+var X = 2
+-- stdout --
+diff old/m_darwin.go new/m_darwin.go
+--- old/m_darwin.go
++++ new/m_darwin.go
+@@ -1,3 +1,3 @@
+ package m
+
+-var X = 2
++var Y = 2
+diff old/m_linux.go new/m_linux.go
+--- old/m_linux.go
++++ new/m_linux.go
+@@ -1,3 +1,3 @@
+ package m
+
+-var X = 1
++var Y = 1

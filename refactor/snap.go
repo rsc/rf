@@ -143,6 +143,18 @@ func (r *Refactor) Snapshots() ([]*Snapshot, error) {
 // load reads all packages in the current module into r and creates the initial
 // Snapshots.
 func (r *Refactor) load() ([]*Snapshot, error) {
+	var snapshots []*Snapshot
+	for _, config := range r.Configs.c {
+		s, err := r.load1(config)
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, s...)
+	}
+	return snapshots, nil
+}
+
+func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 	dir := r.dir
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -181,9 +193,14 @@ func (r *Refactor) load() ([]*Snapshot, error) {
 	r.modPath = m.Module.Path
 	isStd := r.modPath == "std" || r.modPath == "cmd"
 
-	cmd = exec.Command("go", "list", "-e", "-json", "-compiled", "-export", "-test", "-deps", "./...")
+	cfgFlags, cfgEnvs, err := config.flagsEnvs()
+	if err != nil {
+		return nil, err
+	}
+	cmdList := append(append([]string{"list", "-e", "-json", "-compiled", "-export", "-test", "-deps"}, cfgFlags...), "./...")
+	cmd = exec.Command("go", cmdList...)
 	cmd.Dir = r.modRoot
-	cmd.Env = append(os.Environ(), "PWD="+r.modRoot)
+	cmd.Env = append(append(os.Environ(), "PWD="+r.modRoot), cfgEnvs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -18,7 +18,27 @@ import (
 	"rsc.io/rf/refactor"
 )
 
-var showDiff = flag.Bool("diff", false, "show diff instead of writing files")
+type flags struct {
+	showDiff bool
+	allPlat  bool
+}
+
+func (f *flags) register(fs *flag.FlagSet) {
+	fs.BoolVar(&f.showDiff, "diff", false, "show diff instead of writing files")
+	fs.BoolVar(&f.allPlat, "allplat", false, "apply refactoring across all GOOS/GOARCH combinations")
+}
+
+func (f *flags) apply(rf *refactor.Refactor) error {
+	rf.ShowDiff = f.showDiff
+	if f.allPlat {
+		var err error
+		rf.Configs, err = refactor.ConfigsAllPlatforms()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "usage: rf [-diff] script\n")
@@ -29,6 +49,8 @@ func main() {
 	log.SetPrefix("rf: ")
 	log.SetFlags(0)
 
+	var flags flags
+	flags.register(flag.CommandLine)
 	flag.Usage = usage
 	flag.Parse()
 	args := flag.Args()
@@ -41,7 +63,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	rf.ShowDiff = *showDiff
+	flags.apply(rf)
+
 	if err := run(rf, script); err != nil {
 		log.Fatal(err)
 	}
