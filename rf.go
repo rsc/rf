@@ -107,6 +107,8 @@ func run(rf *refactor.Refactor, script string) error {
 		}
 		lastCmd = x
 
+		var resetErrs refactor.ErrorList
+		resets := 0
 		for _, snap := range snaps {
 			targ := snap.Target()
 			if targ == nil {
@@ -116,8 +118,15 @@ func run(rf *refactor.Refactor, script string) error {
 				return fmt.Errorf("no types in target")
 			}
 
-			if err := fn(snap, args); err != nil {
+			switch err := fn(snap, args).(type) {
+			case nil:
+			case *errUsage:
 				return err
+			case *errPrecondition:
+				snap.Reset()
+				resets++
+				resetErrs.Add(err)
+				continue
 			}
 
 			if err := snap.Errors.Err(); err != nil {
@@ -128,6 +137,10 @@ func run(rf *refactor.Refactor, script string) error {
 			if err := snap.Errors.Err(); err != nil {
 				return wrapError(err, "errors found during gofmt after: %s", lastCmd)
 			}
+		}
+		if resets == len(snaps) {
+			// Precondition wasn't met on *any* snapshot. Report errors.
+			return wrapError(resetErrs.Err(), "errors found during: %s", lastCmd)
 		}
 
 		switch err := rf.Apply(); err.(type) {

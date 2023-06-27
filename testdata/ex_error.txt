@@ -7,3 +7,4 @@ var _ = 3+2+1
 errors in example:
 invalid operation: i (variable of type int) is not an interface
 /* i+1 -> */ i.(float64)
+errors found during: ex { var i int; i+1 -> i.(float64) }

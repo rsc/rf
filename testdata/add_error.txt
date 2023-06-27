@@ -3,3 +3,4 @@ add T test
 package m
 -- stderr --
 T not found
+errors found during: add T test

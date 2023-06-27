@@ -870,6 +870,17 @@ func opener(name string) func(string) (io.ReadCloser, error) {
 	}
 }
 
+// Reset undoes any edits to s.
+func (s *Snapshot) Reset() {
+	for k, edit := range s.edits {
+		if edit.Create {
+			delete(s.files, edit.Name)
+		}
+		delete(s.edits, k)
+	}
+	s.Errors.errs = nil
+}
+
 // MergeSnapshots combines all Snapshots. The resulting Snapshot contains only
 // files and cannot be type-checked, but can be written out. If any Snapshots
 // are inconsistent, it prints details to r.Stderr and returns an error.

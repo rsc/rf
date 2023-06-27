@@ -1,0 +1,32 @@
+# Test that it's okay for refactorings to only apply to some Snapshots.
+# This test constructs two Snapshots, one with m_test and one without,
+# and applies a refactoring that only works on m_test.
+#
+# TODO: This would be less awkward as a GOOS/GOARCH test.
+mv X M
+-- m.go --
+package m
+-- m_test.go --
+package m
+
+import "m/x"
+
+var X = x.X
+-- x/x.go --
+package x
+
+var X = 1
+-- x/x_test.go --
+package x
+
+import _ "m"
+-- stdout --
+diff old/m_test.go new/m_test.go
+--- old/m_test.go
++++ new/m_test.go
+@@ -2,4 +2,4 @@
+
+ import "m/x"
+
+-var X = x.X
++var M = x.X
