@@ -197,7 +197,7 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmdList := append(append([]string{"list", "-e", "-json", "-compiled", "-export", "-test", "-deps"}, cfgFlags...), "./...")
+	cmdList := append(append([]string{"list", "-e", "-json", "-compiled", "-test", "-deps"}, cfgFlags...), "./...")
 	cmd = exec.Command("go", cmdList...)
 	cmd.Dir = r.modRoot
 	cmd.Env = append(append(os.Environ(), "PWD="+r.modRoot), cfgEnvs...)
@@ -299,6 +299,7 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 	// Snapshots) and would really push on the "precondition" issue.
 
 	pkgByID := make(map[string]*Package)
+	needExportData := make(map[string]bool) // Keyed by package ID
 	base := newPkgGraph("base")
 	graphByTest := make(map[string]*pkgGraph) // keyed by ForTest
 	for {
@@ -340,7 +341,6 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 			// The module version is "" for anything in the workspace.
 			p.InCurrentModule = jp.Module != nil && jp.Module.Version == ""
 		}
-		p.Export = jp.Export
 
 		if pkgByID[p.ID] != nil {
 			return nil, fmt.Errorf("duplicate package ID %q", p.ID)
@@ -407,10 +407,11 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 			fmt.Println("new package", id, "added to graph", g.name)
 		}
 
-		if false && !p.InCurrentModule && p.Export != "" {
+		if !p.InCurrentModule {
 			// Outside current module, so not updating.
 			// Load from export data.
 			// Don't bother with source files.
+			needExportData[p.ID] = true
 			continue
 		}
 
@@ -422,7 +423,6 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 		}
 
 		// Set up for loading from source code.
-		p.Export = "" // Remember NOT to load from export data.
 		for _, name := range jp.CompiledGoFiles {
 			if strings.HasSuffix(name, ".s") { // surprise!
 				continue
@@ -446,6 +446,55 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 
 	if debugLoad {
 		fmt.Println(len(graphByTest), "initial test graphs")
+	}
+
+	// Load export data. We do this for only the packages we need because it
+	// requires compiling the packages, which can be quite slow.
+	if len(needExportData) > 0 {
+		needExportPaths := make(map[string]bool)
+		for pkgID := range needExportData {
+			pkg := pkgByID[pkgID]
+			if pkg.ForTest == "" {
+				needExportPaths[pkg.PkgPath] = true
+			} else {
+				// We can't ask for test packages directly, so depend on -test
+				// -deps to provide the package we're looking for.
+				needExportPaths[pkg.ForTest] = true
+			}
+		}
+		paths := make([]string, 0, len(needExportPaths))
+		for k := range needExportPaths {
+			paths = append(paths, k)
+		}
+		sort.Strings(paths)
+		cmdList := append(append([]string{"list", "-e", "-json", "-export", "-test", "-deps"}, cfgFlags...), paths...)
+		cmd = exec.Command("go", cmdList...)
+		cmd.Dir = r.modRoot
+		cmd.Env = append(append(os.Environ(), "PWD="+r.modRoot), cfgEnvs...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err = cmd.Run()
+		if err != nil {
+			return nil, fmt.Errorf("listing exports: %v\n%s%s", err, stderr.Bytes(), stdout.Bytes())
+		}
+		dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+
+		for {
+			var jp jsonPackage
+			err := dec.Decode(&jp)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("loading exports: %v", err)
+			}
+
+			id := jp.ImportPath
+			if needExportData[id] {
+				pkgByID[id].Export = jp.Export
+			}
+		}
 	}
 
 	// Merge graphs as long as we don't create cycles. We use a simple greedy
