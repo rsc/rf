@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build go1.16
 // +build go1.16
 
 // Git-generate regenerates a commit from a script kept in the commit message.
@@ -221,7 +222,14 @@ func gitDir(dir string, args ...string) string {
 func walkGit(dir string, f func(path string)) {
 	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if d.Name() == ".git" {
-			return fs.SkipDir
+			// .git is usually a directory, in which case we want to skip it.
+			// But in some cases it may be a file (git worktrees), so we need
+			// to be careful not to return fs.SkipDir or else we'll skip .git's
+			// parent, which is usually the repository root.
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			return nil
