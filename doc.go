@@ -80,7 +80,7 @@
 //	var VT T
 //
 // The simplest code address is the name of a top-level declaration.
-// In this program, those addresses are C, D, F, T, V, and VT.
+// In this program, those addresses are C, D, F, T, TAlias, V, and VT.
 //
 // Adding .Name to an address selects a name within the earlier address,
 // whether that's a function variable (F.who, F.msg),
