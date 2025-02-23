@@ -99,8 +99,11 @@ func main() {
 			script = readScript(msg, "")
 		}
 	} else {
-		msg := git("log", "-n1", what)
-		script = readScript(msg, "    ")
+		_, msg, ok := strings.Cut(git("cat-file", "commit", what), "\n\n")
+		if !ok {
+			log.Fatalf("internal error: blank line not found in 'git cat-file commit %s' output", what)
+		}
+		script = readScript(msg, "")
 	}
 
 	if len(script) == 0 {
