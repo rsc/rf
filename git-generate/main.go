@@ -40,6 +40,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -64,6 +65,11 @@ func main() {
 	}
 
 	gitdir := strings.TrimSpace(git("rev-parse", "--show-toplevel"))
+	if runtime.GOOS == "windows" {
+		// Convert to path with filepath.Separator so that prefix-based
+		// relative path computation in walkDir works on Windows too.
+		gitdir = filepath.Clean(gitdir)
+	}
 
 	if *file != "" && *conflict {
 		log.Fatalf("cannot use -conflict with -f")
