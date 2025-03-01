@@ -2,9 +2,6 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build go1.16
-// +build go1.16
-
 // Git-generate regenerates a commit from a script kept in the commit message.
 //
 // Specifically, the topmost commit in the current git repo should have a script
@@ -14,11 +11,11 @@
 //
 // For example, a commit message might say:
 //
-// 	We are moving from Old to New.
+//	We are moving from Old to New.
 //
-// 	[git-generate]
-// 	cd some/dir
-// 	sed -i '' 's/Old/New/g' *
+//	[git-generate]
+//	cd some/dir
+//	sed -i '' 's/Old/New/g' *
 //
 // To regenerate the commit, git-generate resets the working file state to before
 // the commit and then runs the script. The script runs using 'bash -e', so any
@@ -35,7 +32,6 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -93,7 +89,7 @@ func main() {
 	var script []string
 	if *file != "" {
 		what = *file
-		data, err := ioutil.ReadFile(*file)
+		data, err := os.ReadFile(*file)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -155,7 +151,7 @@ func main() {
 		have[path] = true
 	})
 
-	f, err := ioutil.TempFile("", "git-generate-")
+	f, err := os.CreateTemp("", "git-generate-")
 	if err != nil {
 		log.Fatal(err)
 	}
