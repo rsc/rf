@@ -1,0 +1,24 @@
+export x
+-- x.go --
+package m
+
+type x int
+type _ = x
+
+func (x) m() {}
+
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +1,6 @@
+ package m
+
+-type x int
+-type _ = x
+-
+-func (x) m() {}
++type X int
++type _ = X
+
++func (X) m() {}

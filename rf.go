@@ -78,6 +78,7 @@ var cmds = map[string]func(*refactor.Snapshot, string) error{
 	"key":        cmdKey,
 	"ex":         cmdEx,
 	"mv":         cmdMv,
+	"export":     cmdExport,
 	"rm":         cmdRm,
 	"typeassert": cmdTypeAssert,
 	"inject":     cmdInject,
