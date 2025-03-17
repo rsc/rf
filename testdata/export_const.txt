@@ -1,0 +1,17 @@
+export x
+-- x.go --
+package m
+
+const x int = 1
+const _ = x
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,4 +1,4 @@
+ package m
+
+-const x int = 1
+-const _ = x
++const X int = 1
++const _ = X

@@ -1,0 +1,36 @@
+export T.foo T.__bar
+-- x.go --
+package p
+
+type T struct {
+	foo, __bar int
+}
+
+var _ = T{}.foo
+var _ = T{}.__bar
+var _ = T{
+	foo: 1,
+	__bar: 2,
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,12 +1,12 @@
+ package p
+
+ type T struct {
+-	foo, __bar int
++	Foo, Bar int
+ }
+
+-var _ = T{}.foo
+-var _ = T{}.__bar
++var _ = T{}.Foo
++var _ = T{}.Bar
+ var _ = T{
+-	foo: 1,
+-	__bar: 2,
++	Foo: 1,
++	Bar: 2,
+ }
