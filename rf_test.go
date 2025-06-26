@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -101,7 +100,7 @@ func TestRun(t *testing.T) {
 			} else {
 				dir = t.TempDir()
 			}
-			if err := ioutil.WriteFile(filepath.Join(dir, "go.mod"), []byte("module m\n"), 0666); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module m\n"), 0666); err != nil {
 				t.Fatal(err)
 			}
 			var wantStdout, wantStderr txtar.File
@@ -118,7 +117,7 @@ func TestRun(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(targ), 0777); err != nil {
 					t.Fatal(err)
 				}
-				if err := ioutil.WriteFile(targ, file.Data, 0666); err != nil {
+				if err := os.WriteFile(targ, file.Data, 0666); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -173,7 +172,7 @@ func TestRun(t *testing.T) {
 				stderrChanged := updateFile(ar, "stderr", stderr.Bytes())
 				stdoutChanged := updateFile(ar, "stdout", stdout.Bytes())
 				if stdoutChanged || stderrChanged {
-					if err := ioutil.WriteFile(file, txtar.Format(ar), 0666); err != nil {
+					if err := os.WriteFile(file, txtar.Format(ar), 0666); err != nil {
 						t.Fatal(err)
 					}
 					t.Log("updated")
