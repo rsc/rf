@@ -1,3 +1,8 @@
 ex { var s string }
 -- x.go --
 package m
+-- stderr --
+errors in example:
+declared and not used: s
+var s string
+errors found during: ex { var s string }
