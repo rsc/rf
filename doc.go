@@ -359,8 +359,6 @@
 // When deleting a declaration, rm also deletes line comments
 // immediately preceding it, up to a blank line.
 //
-// UNIMPLEMENTED: removal of struct fields, interface methods, text ranges.
-//
 // # Bugs Bugs Bugs
 //
 // Rf is very very rough. Everything is subject to change, and it may break your programs.
