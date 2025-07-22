@@ -123,7 +123,6 @@ func (m *matcher) matchStmt(x, y ast.Stmt) bool {
 //
 // A wildcard appearing more than once in the pattern must
 // consistently match the same tree.
-//
 func (m *matcher) matchExpr(x, y ast.Expr) bool {
 	if x == nil || y == nil {
 		return x == y

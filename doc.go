@@ -36,7 +36,7 @@
 //		}
 //	'
 //
-// Code addresses
+// # Code addresses
 //
 // Most commands take “code addresses” as arguments.
 // Each code address identifies some code in a program.
@@ -114,7 +114,7 @@
 //
 // See http://9p.io/sys/doc/sam/sam.html Table II for details on the syntax.
 //
-// The add command
+// # The add command
 //
 // The add command adds text to the source code. It takes as an argument the
 // address after which the text should be added, followed by the text itself.
@@ -134,12 +134,12 @@
 //
 //	add x.go func F() {}
 //
-// The cp command
+// # The cp command
 //
 // The cp command is like mv (see below) but doesn't delete the source
 // and doesn't update any references. (UNIMPLEMENTED)
 //
-// The ex command
+// # The ex command
 //
 // The ex command applies rewrites based on example snippets.
 //
@@ -166,7 +166,7 @@
 //		fmt.Sprintf("%q", s) -> strconv.Quote(s)
 //	}
 //
-// The inline command
+// # The inline command
 //
 // The inline command inlines uses of declared constants, functions, and types.
 //
@@ -187,7 +187,7 @@
 //
 // UNIMPLEMENTED: Inlining of functions.
 //
-// The key command
+// # The key command
 //
 // The key command converts all struct literals for a list of types to keyed literals.
 //
@@ -200,7 +200,7 @@
 //
 //	key Point
 //
-// The mv command
+// # The mv command
 //
 // The mv command moves and renames code.
 //
@@ -349,7 +349,7 @@
 // If the destination is a file or package, multiple sources can be listed.
 // The mv command moves each source item in turn to the destination.
 //
-// The rm command
+// # The rm command
 //
 // The rm command removes code.
 //
@@ -361,8 +361,7 @@
 //
 // UNIMPLEMENTED: removal of struct fields, interface methods, text ranges.
 //
-// Bugs Bugs Bugs
+// # Bugs Bugs Bugs
 //
 // Rf is very very rough. Everything is subject to change, and it may break your programs.
-//
 package main
