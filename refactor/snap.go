@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -856,7 +857,9 @@ func (s *snapImporter) Import(path string) (*types.Package, error) {
 }
 
 func (s *Snapshot) check(p *Package) {
-	if p.PkgPath == "unsafe" {
+	if matched, err := regexp.MatchString("^unsafe([[:space:]]+|$)", p.PkgPath); err != nil {
+		panic(err)
+	} else if matched {
 		p.Types = types.Unsafe
 		return
 	}
