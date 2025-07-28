@@ -197,7 +197,7 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmdList := append(append([]string{"list", "-e", "-json", "-compiled", "-test", "-deps"}, cfgFlags...), "./...")
+	cmdList := append(append([]string{"list", "-e", "-pgo=off", "-json", "-compiled", "-test", "-deps"}, cfgFlags...), "./...")
 	cmd = exec.Command("go", cmdList...)
 	cmd.Dir = r.modRoot
 	cmd.Env = append(append(os.Environ(), "PWD="+r.modRoot), cfgEnvs...)
