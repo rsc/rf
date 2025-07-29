@@ -40,6 +40,11 @@ func deleteUnusedImports(s *Snapshot, p *Package, text []byte) []byte {
 		if name == "" {
 			p1 := s.pkgGraph.byPath(pkg)
 			if p1 == nil {
+				if val, ok := p.ImportMap[pkg]; ok {
+					p1 = s.pkgGraph.pkgByPath[val]
+				}
+			}
+			if p1 == nil {
 				panic("NO IMPORT: " + pkg)
 			}
 			name = p1.Name
