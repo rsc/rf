@@ -38,11 +38,12 @@ func deleteUnusedImports(s *Snapshot, p *Package, text []byte) []byte {
 
 	match := func(name, pkg string) bool {
 		if name == "" {
-			p1 := s.pkgGraph.byPath(pkg)
+			var p1 *Package
+			if path, ok := p.ImportMap[pkg]; ok {
+				p1 = s.pkgGraph.byPath(path)
+			}
 			if p1 == nil {
-				if val, ok := p.ImportMap[pkg]; ok {
-					p1 = s.pkgGraph.pkgByPath[val]
-				}
+				p1 = s.pkgGraph.byPath(pkg)
 			}
 			if p1 == nil {
 				panic("NO IMPORT: " + pkg)
