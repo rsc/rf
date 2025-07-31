@@ -58,6 +58,17 @@ type Snapshot struct {
 	sizes types.Sizes
 }
 
+// From local import path to package path (used for vendored packages in std)
+type importMap map[string]string
+
+// Lookup returns the pkgPath for the given import path.
+func (im importMap) Lookup(importPath string) string {
+	if pkgPath, ok := im[importPath]; ok {
+		return pkgPath
+	}
+	return importPath
+}
+
 type Package struct {
 	Name            string
 	Dir             string
@@ -69,7 +80,7 @@ type Package struct {
 	InCurrentModule bool
 	Export          string
 	BuildID         string
-	ImportMap       map[string]string // from local import path to package path (used for vendored packages in std)
+	ImportMap       importMap
 
 	Types     *types.Package
 	TypesInfo *types.Info
@@ -833,24 +844,18 @@ type snapImporter struct {
 	p *Package
 }
 
-func (s *snapImporter) Import(path string) (*types.Package, error) {
-	if path1, ok := s.p.ImportMap[path]; ok {
-		// This is a vendored package in std, so we need to remap the "local"
-		// import path to the unique vendored import path.
-		path = path1
-	}
-
-	p := s.s.pkgGraph.byPath(path)
+func (s *snapImporter) Import(importPath string) (*types.Package, error) {
+	p := s.s.pkgGraph.byPath(s.p.ImportMap.Lookup(importPath))
 	if debugTypeCheck {
-		fmt.Printf("import %s %p resolve %s => %s %p\n", s.p.ID, s.p, path, p.ID, p)
+		fmt.Printf("import %s %p resolve %s => %s %p\n", s.p.ID, s.p, importPath, p.ID, p)
 	}
 	if p == nil {
-		return nil, fmt.Errorf("import not available: %s", path)
+		return nil, fmt.Errorf("import not available: %s", importPath)
 	}
 	if p.Types == nil {
 		// We are running the type-checking in dependency order,
 		// so if this happens, it's a mistake.
-		return nil, fmt.Errorf("internal error - import not yet available:")
+		return nil, fmt.Errorf("internal error - import not yet available: %s", importPath)
 	}
 	return p.Types, nil
 }
