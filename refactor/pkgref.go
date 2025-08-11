@@ -225,7 +225,11 @@ func (s *Snapshot) addPkgDeps(g *DepsGraph, p *Package) {
 						t = p.X
 					}
 					if i, ok := t.(*ast.IndexExpr); ok {
-						// Method with a type-parameterized receiver.
+						// Method with a receiver having a single type parameter.
+						t = i.X
+					}
+					if i, ok := t.(*ast.IndexListExpr); ok {
+						// Method with receiver having multiple type parameters.
 						t = i.X
 					}
 					id, ok := t.(*ast.Ident)

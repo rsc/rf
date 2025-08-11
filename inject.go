@@ -14,6 +14,20 @@ import (
 	"rsc.io/rf/refactor"
 )
 
+// origin returns the origin for the given [types.Object]. Normally, this is
+// the object itself, but for instantiated methods or fields it is the
+// corresponding object on the generic type.
+func origin(obj types.Object) types.Object {
+	switch t := obj.(type) {
+	case *types.Func:
+		return t.Origin()
+	case *types.Var:
+		return t.Origin()
+	default:
+		return obj
+	}
+}
+
 func cmdInject(snap *refactor.Snapshot, args string) error {
 	items, _ := snap.EvalList(args)
 	if len(items) < 2 {
@@ -101,7 +115,7 @@ func cmdInject(snap *refactor.Snapshot, args string) error {
 			if !ok || len(stack) < 2 {
 				return
 			}
-			obj := pkg.TypesInfo.Uses[id]
+			obj := origin(pkg.TypesInfo.Uses[id])
 			if converting[obj] == "" {
 				return
 			}
@@ -165,7 +179,7 @@ func cmdInject(snap *refactor.Snapshot, args string) error {
 			if !ok || len(stack) < 2 {
 				return
 			}
-			obj := pkg.TypesInfo.Uses[id]
+			obj := origin(pkg.TypesInfo.Uses[id])
 			if converting[obj] == "" && obj != targetObj {
 				return
 			}

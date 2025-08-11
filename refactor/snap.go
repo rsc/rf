@@ -182,7 +182,7 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 	}
 	mod := strings.TrimSpace(string(bmod))
 	if filepath.Base(mod) != "go.mod" {
-		return nil, fmt.Errorf("no module found for " + dir)
+		return nil, fmt.Errorf("no module found for: %s", dir)
 	}
 	r.modRoot = filepath.Dir(mod)
 
