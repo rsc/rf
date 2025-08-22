@@ -48,6 +48,30 @@ var readLineTests = []struct {
 		in:  "cmd {\nx y\n}\n",
 		out: []string{"cmd {\nx y\n}"},
 	},
+	{
+		in:  "cmd It\\'s not a failure\n",
+		out: []string{"cmd It's not a failure"},
+	},
+	{
+		in:  "cmd 'It\\'s not a failure'\n",
+		out: []string{"cmd 'It\\'s not a failure'"},
+	},
+	{
+		in:  "cmd It\\\"s not a failure\n",
+		out: []string{"cmd It\"s not a failure"},
+	},
+	{
+		in:  "cmd \"It\\\"s not a failure\"\n",
+		out: []string{"cmd \"It\\\"s not a failure\""},
+	},
+	{
+		in:  "cmd It's a failure\n",
+		err: fmt.Errorf("newline in '-quoted string"),
+	},
+	{
+		in:  "cmd It\"s a failure\n",
+		err: fmt.Errorf("newline in \"-quoted string"),
+	},
 }
 
 func TestReadLine(t *testing.T) {
