@@ -204,6 +204,11 @@ func cmdInject(snap *refactor.Snapshot, args string) error {
 					name = items[0].Name
 					outer := items[0].Outermost()
 					if outer.Kind == refactor.ItemPkg {
+						if pkg.Types == outer.Obj.(*types.PkgName).Imported() {
+							// Don't add an import if we are already in that package
+							name = strings.TrimPrefix(name, outer.Name + ".")
+							return
+						}
 						name = snap.NeedImport(stack[1].Pos(), "", outer.Obj.(*types.PkgName).Imported()) + strings.TrimPrefix(name, outer.Name)
 					}
 				}
