@@ -277,6 +277,13 @@ func readLine(text string) (line, rest string, err error) {
 
 		case c == '\\':
 			j := i + 1
+			if j < len(text) && (text[j] == '\'' || text[j] == '"') {
+				keep.WriteString(text[start:i])
+				keep.WriteByte(text[j])
+				start = j + 1
+				i = j + 1
+				continue
+			}
 			for j < len(text) && text[j] == ' ' || text[j] == '\t' {
 				j++
 			}
