@@ -535,7 +535,6 @@ func (ex *exArgs) run() {
 			})
 		}
 	}
-	return
 }
 
 func (m *matcher) applySubst(subst ast.Node, matchContext []ast.Node) (string, ast.Node) {

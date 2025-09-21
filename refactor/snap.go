@@ -15,7 +15,6 @@ import (
 	"go/token"
 	"go/types"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -116,10 +115,10 @@ type buildCache struct {
 
 func (s *Snapshot) Refactor() *Refactor { return s.r }
 
-func (s *Snapshot) ErrorAt(pos token.Pos, format string, args ...interface{}) {
+func (s *Snapshot) ErrorAt(pos token.Pos, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	msg = strings.TrimRight(msg, "\n")
-	msg = strings.Replace(msg, "\n", "\n\t", -1)
+	msg = strings.ReplaceAll(msg, "\n", "\n\t")
 	if pos == token.NoPos {
 		s.Errors.Add(&Error{Msg: msg})
 	} else {
@@ -1039,7 +1038,7 @@ func (c *buildCache) newFile(name string) (*File, error) {
 	if !filepath.IsAbs(name) {
 		name = filepath.Join(c.r.dir, name)
 	}
-	text, err := ioutil.ReadFile(name)
+	text, err := os.ReadFile(name)
 	if err != nil {
 		return nil, err
 	}
