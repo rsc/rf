@@ -117,7 +117,7 @@ func mvCode(snap *refactor.Snapshot, srcs []*refactor.Item, dst *refactor.Item, 
 			}
 			name = typ.(*types.Named).Obj().Name() + "." + name
 		}
-		remap[refactor.QualName{src, name}] = refactor.QualName{dst, name}
+		remap[refactor.QualName{Pkg: src, Name: name}] = refactor.QualName{Pkg: dst, Name: name}
 	}
 	g := snap.DepsGraph(refactor.SymRefs).Map(remap)
 

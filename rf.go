@@ -203,7 +203,7 @@ func run(rf *refactor.Refactor, script string) error {
 	return snap.Write()
 }
 
-func wrapError(err error, f string, args ...interface{}) error {
+func wrapError(err error, f string, args ...any) error {
 	var l *refactor.ErrorList
 	if errors.As(err, &l) {
 		// For an error list, print all of l first, followed by the new message,

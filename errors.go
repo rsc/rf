@@ -12,7 +12,7 @@ type errUsage struct {
 	err string
 }
 
-func newErrUsage(f string, args ...interface{}) *errUsage {
+func newErrUsage(f string, args ...any) *errUsage {
 	return &errUsage{fmt.Sprintf(f, args...)}
 }
 
@@ -27,7 +27,7 @@ type errPrecondition struct {
 	err string
 }
 
-func newErrPrecondition(f string, args ...interface{}) *errPrecondition {
+func newErrPrecondition(f string, args ...any) *errPrecondition {
 	return &errPrecondition{fmt.Sprintf(f, args...)}
 }
 
