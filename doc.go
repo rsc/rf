@@ -258,8 +258,6 @@
 //
 //	mv TFunction T.Method
 //
-// UNIMPLEMENTED.
-//
 // code text → new function
 //
 // A text range can be moved to a new function, leaving behind an appropriate

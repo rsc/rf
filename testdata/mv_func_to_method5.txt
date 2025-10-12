@@ -1,0 +1,52 @@
+mv Foo S1.Bar
+-- p.go --
+package m
+
+type S1 struct{}
+
+type S2 struct {
+	X S1
+}
+
+var Corge S2
+
+func Foo(s S1) {}
+
+func xyzzy() {
+	funcvar := Foo
+	_ = funcvar
+}
+-- q/q.go --
+package q
+
+import "m"
+
+func plugh() {
+	m.Foo(m.Corge.X)
+}
+-- stdout --
+diff old/p.go new/p.go
+--- old/p.go
++++ new/p.go
+@@ -8,9 +8,9 @@
+
+ var Corge S2
+
+-func Foo(s S1) {}
++func (s S1) Bar() {}
+
+ func xyzzy() {
+-	funcvar := Foo
++	funcvar := S1.Bar
+ 	_ = funcvar
+ }
+diff old/q/q.go new/q/q.go
+--- old/q/q.go
++++ new/q/q.go
+@@ -3,5 +3,5 @@
+ import "m"
+
+ func plugh() {
+-	m.Foo(m.Corge.X)
++	m.Corge.X.Bar()
+ }

@@ -224,14 +224,13 @@ func cmdMv(snap *refactor.Snapshot, args string) error {
 	// TODO: Rename global function to method.
 	if old.Outer == nil && old.Kind == refactor.ItemFunc &&
 		newOuter != nil && newOuter.Kind == refactor.ItemType {
-		if newItem != nil { // TODO
+		if newItem != nil && newItem.Kind != refactor.ItemNotFound {
 			snap.ErrorAt(newItem.Obj.Pos(), "already have %s", newPath)
 			return nil
 		}
 		if _, ok := newOuter.Obj.(*types.TypeName); ok {
-			// TODO check method set for newName
-			// TODO check that first argument of old function is receiver
-			// TODO finish
+			funcToMethod(snap, old.Obj.(*types.Func), newName)
+			return nil
 		}
 	}
 
@@ -526,6 +525,149 @@ func methodToFunc(snap *refactor.Snapshot, method *types.Func, name string) {
 				// There are no binary operators that can yield a pointer,
 				// so no possible need for parens around x.
 				snap.InsertAt(sel.X.Pos(), "*")
+			}
+		})
+	})
+}
+
+func funcToMethod(snap *refactor.Snapshot, method *types.Func, name string) {
+	stack := snap.SyntaxAt(method.Pos()) // FuncType Ident FuncDecl
+	decl := stack[2].(*ast.FuncDecl)
+	fn := stack[0].(*ast.FuncType)
+
+	if len(decl.Type.Params.List) < 1 {
+		panic(fmt.Sprintf("function %q has no parameters", decl.Name.Name))
+	}
+
+	// Determine receiver name from the parameter list
+	rcvrName := func() string {
+		if len(decl.Type.Params.List[0].Names) > 0 {
+			return decl.Type.Params.List[0].Names[0].Name
+		}
+		return ""
+	}()
+
+	// Determine receiver type from parameter list
+	rcvrType := func() string {
+		switch pt := decl.Type.Params.List[0].Type.(type) {
+		default:
+			panic(fmt.Sprintf("unexpected parameter type: %T", pt))
+		case *ast.Ident:
+			return pt.Name
+		case *ast.StarExpr:
+			ident, ok := pt.X.(*ast.Ident)
+			if !ok {
+				panic("parameter type is not an identifier")
+			}
+			return "*" + ident.Name
+		}
+	}()
+
+	lo := fn.Func
+	hi := func() token.Pos {
+		if len(decl.Type.Params.List) > 1 {
+			return decl.Type.Params.List[1].Pos() - 1
+		}
+		return decl.Type.Params.List[0].End()
+	}()
+	str := fmt.Sprintf("func (%s %s) %s (", rcvrName, rcvrType, name)
+	snap.ReplaceAt(lo, hi, str)
+
+	// Find and convert function uses.
+
+	snap.ForEachFile(func(pkg *refactor.Package, file *ast.File) {
+		refactor.Walk(file, func(stack []ast.Node) {
+			id, ok := stack[0].(*ast.Ident)
+			if !ok || pkg.TypesInfo.Uses[id] != method {
+				return
+			}
+
+			assignExpr, selExpr := func() (*ast.AssignStmt, *ast.SelectorExpr) {
+				if a, ok := stack[1].(*ast.AssignStmt); ok {
+					return a, nil
+				}
+				if s, ok := stack[1].(*ast.SelectorExpr); ok {
+					if a, ok := stack[2].(*ast.AssignStmt); ok {
+						return a, s
+					}
+				}
+				return nil, nil
+			}()
+			// Handle the assignment case:
+			//   pkg.Foo -> (*pkg.T).Foo
+			if assignExpr != nil && selExpr != nil && strings.HasPrefix(rcvrType, "*") {
+				id, ok := selExpr.X.(*ast.Ident)
+				if !ok {
+					panic(fmt.Sprintf("unexpected type %T", selExpr.X))
+				}
+				repl := fmt.Sprintf("(*%s.%s).%s", id.String(), rcvrType[1:], name)
+				snap.ReplaceNode(selExpr, repl)
+				return
+			}
+			// Handle the assignment cases:
+			//   Foo -> T.Foo
+			//   Foo -> (*T).Foo
+			//   pkg.Foo -> pkg.T.Foo
+			if assignExpr != nil {
+				fmtStr := func() string {
+					if strings.HasPrefix(rcvrType, "*") {
+						return "(%s).%s"
+					}
+					return "%s.%s"
+				}()
+				snap.ReplaceNode(id, fmt.Sprintf(fmtStr, rcvrType, name))
+				return
+			}
+
+			// Handle normal function calls
+			call := func() *ast.CallExpr {
+				if call, ok := stack[1].(*ast.CallExpr); ok {
+					return call
+				}
+				if call, ok := stack[2].(*ast.CallExpr); ok {
+					return call
+				}
+				return nil
+			}()
+			if call == nil || len(call.Args) >= 1 {
+				fn := func() *ast.Ident {
+					switch t := call.Fun.(type) {
+					case *ast.Ident:
+						return t
+					case *ast.SelectorExpr:
+						return t.Sel
+					default:
+						return nil
+					}
+				}()
+				if fn != nil && fn == id {
+					lo = call.Pos()
+					hi = func() token.Pos {
+						if len(call.Args) > 1 {
+							return call.Args[1].Pos() - 1
+						}
+						return call.Args[0].End()
+					}()
+					rcvrName := snap.Text(call.Args[0].Pos(), call.Args[0].End())
+					snap.ReplaceAt(lo, hi, fmt.Sprintf("%s.%s(", rcvrName, name))
+					return
+				}
+			}
+
+			// Handle replacement within other function call
+			if selExpr, ok := stack[1].(*ast.SelectorExpr); ok {
+				id, ok := selExpr.X.(*ast.Ident)
+				if !ok {
+					panic(fmt.Sprintf("unexpected type %T", selExpr.X))
+				}
+				if strings.HasPrefix(rcvrType, "*") {
+					repl := fmt.Sprintf("(*%s.%s).%s", id.String(), rcvrType[1:], name)
+					snap.ReplaceNode(selExpr, repl)
+					return
+				}
+				repl := fmt.Sprintf("%s.%s", rcvrType, name)
+				snap.ReplaceNode(selExpr.Sel, repl)
+				return
 			}
 		})
 	})
