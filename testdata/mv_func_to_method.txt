@@ -1,0 +1,62 @@
+mv bar S.foo1
+mv baz S.foo2
+mv Qux S.Foo3
+mv quux S.foo4
+-- p.go --
+package m
+
+type S struct{}
+
+func bar(s S) {}
+func baz(s *S) {}
+func Qux(s *S, x int) {}
+func quux(*S) {}
+
+func xyzzy() {
+	bar(S{})
+	g := &S{}
+	baz(g)
+}
+-- q/q.go --
+package q
+
+import "m"
+
+func plugh() {
+	s := &m.S{}
+	m.Qux(s, 0)
+}
+-- stdout --
+diff old/p.go new/p.go
+--- old/p.go
++++ new/p.go
+@@ -2,13 +2,13 @@
+
+ type S struct{}
+
+-func bar(s S) {}
+-func baz(s *S) {}
+-func Qux(s *S, x int) {}
+-func quux(*S) {}
++func (s S) foo1()       {}
++func (s *S) foo2()      {}
++func (s *S) Foo3(x int) {}
++func (*S) foo4()        {}
+
+ func xyzzy() {
+-	bar(S{})
++	S{}.foo1()
+ 	g := &S{}
+-	baz(g)
++	g.foo2()
+ }
+diff old/q/q.go new/q/q.go
+--- old/q/q.go
++++ new/q/q.go
+@@ -4,5 +4,5 @@
+
+ func plugh() {
+ 	s := &m.S{}
+-	m.Qux(s, 0)
++	s.Foo3(0)
+ }
