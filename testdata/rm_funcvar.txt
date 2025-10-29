@@ -1,0 +1,38 @@
+rm F11.x
+rm F12.y
+rm F13.z
+rm F21.x
+rm F22.y
+rm F23.z
+-- x.go --
+package m
+
+func F11(x, y, z int) {}
+func F12(x, y, z int) {}
+func F13(x, y, z int) {}
+
+func F21(x int, y string, z float64) {}
+func F22(x int, y string, z float64) {}
+func F23(x int, y string, z float64) {}
+
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,10 +1,9 @@
+ package m
+
+-func F11(x, y, z int) {}
+-func F12(x, y, z int) {}
+-func F13(x, y, z int) {}
+-
+-func F21(x int, y string, z float64) {}
+-func F22(x int, y string, z float64) {}
+-func F23(x int, y string, z float64) {}
++func F11(y, z int) {}
++func F12(x, z int) {}
++func F13(x, y int) {}
+
++func F21(y string, z float64) {}
++func F22(x int, z float64)    {}
++func F23(x int, y string)     {}

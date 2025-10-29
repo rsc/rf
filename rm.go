@@ -51,9 +51,50 @@ Objs:
 			snap.ErrorAt(obj.Pos(), "cannot delete declaration of %s (unexpected %T)", obj.Name(), n)
 
 		case *ast.Field:
-			if len(n.Names) != 1 {
-				// TODO(mdempsky): Need to identify a comma we can delete.
-				snap.ErrorAt(obj.Pos(), "cannot delete declaration of %s (more than 1 field)", obj.Name())
+			if len(n.Names) > 1 {
+				find := func(needle types.Object, haystack []*ast.Ident) int {
+					for idx, ident := range haystack {
+						if needle.Pos() == ident.Pos() {
+							return idx
+						}
+					}
+					return -1
+				}
+				switch idx := find(obj, n.Names); {
+				case idx < 0:
+					snap.ErrorAt(obj.Pos(), "cannot delete unknown field %q", obj.Name())
+				case idx == 0:
+					start := n.Names[idx].Pos()
+					end := n.Names[idx+1].Pos() - 1 // delete trailing comma
+					snap.DeleteAt(start, end)
+				default:
+					start := n.Names[idx-1].End() // delete preceeding space and comma
+					end := n.Names[idx].End()
+					snap.DeleteAt(start, end)
+				}
+				break
+			}
+			if fl, ok := stack[2].(*ast.FieldList); ok && len(fl.List) > 1 {
+				find := func(needle *ast.Field, haystack *ast.FieldList) int {
+					for idx, field := range haystack.List {
+						if needle == field {
+							return idx
+						}
+					}
+					return -1
+				}
+				switch idx := find(n, fl); {
+				case idx < 0:
+					snap.ErrorAt(obj.Pos(), "cannot delete unknown field %q", obj.Name())
+				case idx == 0:
+					start, end := nodeRange(snap, n)
+					end += 1 // delete trailing comma
+					snap.DeleteAt(start, end)
+				default:
+					start := fl.List[idx-1].End()
+					end := fl.List[idx].End()
+					snap.DeleteAt(start, end)
+				}
 				break
 			}
 			snap.DeleteAt(nodeRange(snap, n))
