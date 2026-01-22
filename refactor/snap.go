@@ -41,6 +41,7 @@ type Snapshot struct {
 	target   *Package
 	packages []*Package
 	pkgGraph *pkgGraph
+	importer types.Importer
 
 	// edits contains edits made to files by this Snapshot. It's keyed by short
 	// path and only contains entries for files that have been modified.
@@ -873,7 +874,16 @@ func (s *Snapshot) check(p *Package) {
 	}
 
 	if !p.InCurrentModule && p.Export != "" {
-		tpkg, err := importer.ForCompiler(s.fset, "gc", opener(p.Export)).Import(p.PkgPath)
+		if s.importer == nil {
+			s.importer = importer.ForCompiler(s.fset, "gc", func(path string) (io.ReadCloser, error) {
+				p := s.pkgGraph.byPath(path)
+				if p == nil || p.Export == "" {
+					return nil, fmt.Errorf("no export data for %s", path)
+				}
+				return os.Open(p.Export)
+			})
+		}
+		tpkg, err := s.importer.Import(p.PkgPath)
 		if err != nil {
 			s.Errors.Add(err)
 		}
