@@ -1,0 +1,35 @@
+# Test that dependency errors are reported cleanly without a panic.
+#
+# The main module here imports a module with a bad embed (a missing file),
+# which can cause cause 'go list' to report Package.DepErrors.
+# This is simplified from an example in github.com/rsc/rf/issues/9, where an
+# improper influxdb build environment meant rf could panic with an unhelpful
+# "package foo is disjoint from package bar" message.
+
+mv M Z
+-- m.go --
+package m
+
+var M = 1
+-- m_test.go --
+package m
+
+import _ "example.com/bad"
+-- go.mod --
+module m
+
+require example.com/bad v0.0.0
+
+replace example.com/bad => ./bad
+-- bad/bad.go --
+package bad
+
+import _ "embed"
+
+//go:embed nonexistent-embed.txt
+var s string
+-- bad/go.mod --
+module example.com/bad
+-- stderr --
+error loading dependency: pattern nonexistent-embed.txt: no matching files found
+errors found before executing script

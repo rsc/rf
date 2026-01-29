@@ -426,11 +426,21 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 			continue
 		}
 
-		if jp.Error != nil && len(jp.CompiledGoFiles) == 0 {
-			// There was a loading error that was so bad we couldn't get a list
-			// of files. Report it now.
-			errs.Add(fmt.Errorf("%s", strings.TrimSuffix(jp.Error.Err, "\n")))
-			continue
+		if len(jp.CompiledGoFiles) == 0 {
+			// We couldn't get a list of files. Check for loading errors.
+			if jp.Error != nil {
+				// Report a package loading error now.
+				errs.Add(fmt.Errorf("%s", strings.TrimSuffix(jp.Error.Err, "\n")))
+				continue
+			}
+			if jp.DepsErrors != nil {
+				// Report errors loading dependencies now given we could not
+				// get a list of files.
+				for _, depError := range jp.DepsErrors {
+					errs.Add(fmt.Errorf("error loading dependency: %s", strings.TrimSuffix(depError.Err, "\n")))
+				}
+				continue
+			}
 		}
 
 		// Set up for loading from source code.
