@@ -93,8 +93,10 @@ func TestReadLine(t *testing.T) {
 	}
 }
 
-var updateTestData = flag.Bool("u", false, "update testdata instead of failing")
-var flagKeep = flag.Bool("keep", false, "keep temporary work directories")
+var (
+	updateTestData = flag.Bool("u", false, "update testdata instead of failing")
+	flagKeep       = flag.Bool("keep", false, "keep temporary work directories")
+)
 
 func TestRun(t *testing.T) {
 	files, err := filepath.Glob("testdata/*.txt")
@@ -124,7 +126,7 @@ func TestRun(t *testing.T) {
 			} else {
 				dir = t.TempDir()
 			}
-			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module m\n"), 0666); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module m\n"), 0o666); err != nil {
 				t.Fatal(err)
 			}
 			var wantStdout, wantStderr txtar.File
@@ -138,10 +140,10 @@ func TestRun(t *testing.T) {
 					continue
 				}
 				targ := filepath.Join(dir, file.Name)
-				if err := os.MkdirAll(filepath.Dir(targ), 0777); err != nil {
+				if err := os.MkdirAll(filepath.Dir(targ), 0o777); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(targ, file.Data, 0666); err != nil {
+				if err := os.WriteFile(targ, file.Data, 0o666); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -196,7 +198,7 @@ func TestRun(t *testing.T) {
 				stderrChanged := updateFile(ar, "stderr", stderr.Bytes())
 				stdoutChanged := updateFile(ar, "stdout", stdout.Bytes())
 				if stdoutChanged || stderrChanged {
-					if err := os.WriteFile(file, txtar.Format(ar), 0666); err != nil {
+					if err := os.WriteFile(file, txtar.Format(ar), 0o666); err != nil {
 						t.Fatal(err)
 					}
 					t.Log("updated")

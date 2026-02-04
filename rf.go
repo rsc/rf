@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -18,21 +19,47 @@ import (
 	"rsc.io/rf/refactor"
 )
 
+const (
+	defaultGoBinary = "go"
+)
+
 type flags struct {
 	showDiff bool
 	allPlat  bool
+	goBinary string
 }
 
 func (f *flags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&f.showDiff, "diff", false, "show diff instead of writing files")
 	fs.BoolVar(&f.allPlat, "allplat", false, "apply refactoring across all GOOS/GOARCH combinations")
+	fs.StringVar(&f.goBinary, "go", defaultGoBinary, "path to go executable")
+}
+
+func normalizeGoBinary(path string) string {
+	defer func() {
+		if path != defaultGoBinary {
+			log.Printf("using go binary: %q\n", path)
+		}
+	}()
+	if path == filepath.Base(path) {
+		// No directory component implies ${PATH} search.
+		return path
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	path = filepath.Clean(path)
+	return path
 }
 
 func (f *flags) apply(rf *refactor.Refactor) error {
+	f.goBinary = normalizeGoBinary(f.goBinary)
 	rf.ShowDiff = f.showDiff
+	rf.GoBinary(f.goBinary)
 	if f.allPlat {
 		var err error
-		rf.Configs, err = refactor.ConfigsAllPlatforms()
+		rf.Configs, err = refactor.ConfigsAllPlatforms(f.goBinary)
 		if err != nil {
 			return err
 		}
@@ -41,7 +68,7 @@ func (f *flags) apply(rf *refactor.Refactor) error {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: rf [-diff] script\n")
+	fmt.Fprintf(os.Stderr, "usage: rf [-diff] [-go=<path>] script\n")
 	os.Exit(2)
 }
 

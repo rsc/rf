@@ -25,9 +25,10 @@ type Refactor struct {
 	// but a caller can overwrite this.
 	Configs Configs
 
-	dir     string
-	modRoot string
-	modPath string
+	dir      string
+	modRoot  string
+	modPath  string
+	goBinary string
 
 	cache *buildCache
 
@@ -53,6 +54,10 @@ func (r *Refactor) PkgDir(pkg string) (string, error) {
 	return filepath.Join(r.modRoot, pkg[len(r.modPath)+1:]), nil
 }
 
+func (r *Refactor) GoBinary(path string) {
+	r.goBinary = path
+}
+
 // New returns a new refactoring,
 // editing the package in the given directory (usually ".").
 func New(dir string) (*Refactor, error) {
@@ -69,11 +74,12 @@ func New(dir string) (*Refactor, error) {
 	dir = d
 
 	r := &Refactor{
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
-		Debug:   make(map[string]string),
-		Configs: Configs{c: []Config{{}}},
-		dir:     dir,
+		Stdout:   os.Stdout,
+		Stderr:   os.Stderr,
+		Debug:    make(map[string]string),
+		Configs:  Configs{c: []Config{{}}},
+		dir:      dir,
+		goBinary: "go",
 	}
 	fset := token.NewFileSet()
 	r.cache = &buildCache{

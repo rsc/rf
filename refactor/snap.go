@@ -173,7 +173,7 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 	}
 	dir = filepath.Clean(dir)
 
-	cmd := exec.Command("go", "env", "GOMOD")
+	cmd := exec.Command(r.goBinary, "env", "GOMOD")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "PWD="+dir)
 	bmod, err := cmd.CombinedOutput()
@@ -186,7 +186,7 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 	}
 	r.modRoot = filepath.Dir(mod)
 
-	cmd = exec.Command("go", "mod", "edit", "-json")
+	cmd = exec.Command(r.goBinary, "mod", "edit", "-json")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "PWD="+dir)
 	js, err := cmd.CombinedOutput()
@@ -204,12 +204,12 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 	r.modPath = m.Module.Path
 	isStd := r.modPath == "std" || r.modPath == "cmd"
 
-	cfgFlags, cfgEnvs, err := config.flagsEnvs()
+	cfgFlags, cfgEnvs, err := config.flagsEnvs(r.goBinary)
 	if err != nil {
 		return nil, err
 	}
 	cmdList := append(append([]string{"list", "-e", "-pgo=off", "-json", "-compiled", "-test", "-deps"}, cfgFlags...), "./...")
-	cmd = exec.Command("go", cmdList...)
+	cmd = exec.Command(r.goBinary, cmdList...)
 	cmd.Dir = r.modRoot
 	cmd.Env = append(append(os.Environ(), "PWD="+r.modRoot), cfgEnvs...)
 	var stdout, stderr bytes.Buffer
@@ -489,7 +489,7 @@ func (r *Refactor) load1(config Config) ([]*Snapshot, error) {
 		}
 		sort.Strings(paths)
 		cmdList := append(append([]string{"list", "-e", "-json", "-export", "-test", "-deps"}, cfgFlags...), paths...)
-		cmd = exec.Command("go", cmdList...)
+		cmd = exec.Command(r.goBinary, cmdList...)
 		cmd.Dir = r.modRoot
 		cmd.Env = append(append(os.Environ(), "PWD="+r.modRoot), cfgEnvs...)
 		var stdout, stderr bytes.Buffer

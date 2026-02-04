@@ -58,10 +58,10 @@ var platformsOnce struct {
 	err  error
 }
 
-func platforms() ([]goosGoarch, error) {
+func platforms(goBinary string) ([]goosGoarch, error) {
 	platformsOnce.once.Do(func() {
 		var platforms []goosGoarch
-		cmd := exec.Command("go", "tool", "dist", "list", "-json")
+		cmd := exec.Command(goBinary, "tool", "dist", "list", "-json")
 		if err := readJSON(cmd, &platforms); err != nil {
 			platformsOnce.err = fmt.Errorf("getting GOOS/GOARCH values: %w", err)
 			return
@@ -96,8 +96,8 @@ func (cs Configs) Plus(cs2 Configs) Configs {
 
 // ConfigsAllPlatforms returns a Configs for all GOOS/GOARCH combinations,
 // including covering both cgo and non-cgo where possible.
-func ConfigsAllPlatforms() (Configs, error) {
-	plats, err := platforms()
+func ConfigsAllPlatforms(goBinary string) (Configs, error) {
+	plats, err := platforms(goBinary)
 	if err != nil {
 		return Configs{}, err
 	}
@@ -133,8 +133,8 @@ func (c Config) String() string {
 
 // flagsEnvs returns the flags and environment variables to pass to go build to
 // produce this build configuration.
-func (c Config) flagsEnvs() (flags, envs []string, err error) {
-	plats, err := platforms()
+func (c Config) flagsEnvs(goBinary string) (flags, envs []string, err error) {
+	plats, err := platforms(goBinary)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -1,0 +1,8 @@
+# Test that -go flag is populated properly.
+-go=go2
+add m.go // foo
+-- m.go --
+package m
+-- stderr --
+errors found before executing script: loading module: exec: "go2": executable file not found in $PATH
+
