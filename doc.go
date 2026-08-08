@@ -215,17 +215,19 @@
 //
 //	var Global int
 //
-//	func F() { G() }
-//	func G() { doSomethingWith(Global) }
-//	func main() { F() }
+//	func with(x int) {}
+//	func F()         { G() }
+//	func G()         { with(Global) }
+//	func main()      { F() }
 //
-// then "inject G F" will produce the following:
+// then "inject Global main" will produce the following:
 //
 //	var Global int
 //
-//	func F(Global int) { G(Global) }
-//	func G(Global int) { doSomethingWith(Global) }
-//	func main() { F(Global) }
+//	func with(x int)   {}
+//	func F(global int) { G(global) }
+//	func G(global int) { with(global) }
+//	func main()        { F(Global) }
 //
 // # The inline command
 //
