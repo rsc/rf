@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"go/types"
+	"path"
 	"strings"
 
 	"rsc.io/rf/refactor"
@@ -21,7 +23,42 @@ func cmdSub(snap *refactor.Snapshot, args string) error {
 	return cmdAddSub(snap, "sub", args)
 }
 
+func parseImportFlags(cmd, args string) ([]string, string, error) {
+	var imports []string
+	for {
+		flag, rest, _ := cutAny(strings.TrimLeft(args, " \t\n"), " \t\n")
+		if flag != "-i" {
+			break
+		}
+		rest = strings.TrimLeft(rest, " \t\n")
+		if rest == "" {
+			return nil, "", newErrUsage("%s -i requires an argument", cmd)
+		}
+		var imp string
+		if q := rest[0]; q == '"' || q == '\'' || q == '`' {
+			var ok bool
+			imp, rest, ok = cut(rest[1:], string(q))
+			if !ok {
+				return nil, "", newErrUsage("%s unterminated quote in -i argument", cmd)
+			}
+		} else {
+			imp, rest, _ = cutAny(rest, " \t\n")
+		}
+		if imp == "" {
+			return nil, "", newErrUsage("%s -i requires non-empty argument", cmd)
+		}
+		imports = append(imports, imp)
+		args = rest
+	}
+	return imports, args, nil
+}
+
 func cmdAddSub(snap *refactor.Snapshot, cmd, args string) error {
+	imports, args, err := parseImportFlags(cmd, args)
+	if err != nil {
+		return err
+	}
+
 	item, expr, text := snap.EvalNext(args)
 	if expr == "" {
 		return newErrUsage("%s address text...", cmd)
@@ -73,6 +110,27 @@ func cmdAddSub(snap *refactor.Snapshot, cmd, args string) error {
 
 	case refactor.ItemPos:
 		pos, end = item.Pos, item.End
+	}
+
+	for _, impPath := range imports {
+		var alias, ppath string
+		if a, p, ok := cut(impPath, " "); ok {
+			alias, ppath = a, strings.TrimLeft(p, " \t")
+		} else {
+			alias, ppath = "", impPath
+		}
+
+		var tpkg *types.Package
+		for _, p := range snap.Packages() {
+			if p.PkgPath == ppath && p.Types != nil {
+				tpkg = p.Types
+				break
+			}
+		}
+		if tpkg == nil {
+			tpkg = types.NewPackage(ppath, path.Base(ppath))
+		}
+		snap.NeedImport(pos, alias, tpkg)
 	}
 
 	var old string

@@ -263,6 +263,25 @@ func (s *Snapshot) Eval(expr string) *Item {
 		}
 	}
 	if item.Kind == ItemNotFound {
+		for _, pp := range s.packages {
+			if (pp.Name == name || pp.PkgPath == name) && pp.Types != nil {
+				tpkg := pp.Types
+				pkgName := types.NewPkgName(token.NoPos, tpkg, name, tpkg)
+				pkg := &Item{Kind: ItemPkg, Obj: pkgName, Name: name}
+				if !more {
+					return pkg
+				}
+				name, rest, more = cut(rest, ".")
+				tpkg = pkg.Obj.(*types.PkgName).Imported()
+				item = evalScope(tpkg.Scope(), name)
+				item.Outer = pkg
+				item.Name = pkg.Name + "." + name
+				p = pp
+				break
+			}
+		}
+	}
+	if item.Kind == ItemNotFound {
 		return item
 	}
 	for more {

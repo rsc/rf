@@ -1,0 +1,11 @@
+inject -i "m/sub" sub.V f
+-- sub/sub.go --
+package sub
+
+var V = 42
+-- x.go --
+package p
+
+func f() {
+	_ = 1
+}

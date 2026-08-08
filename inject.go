@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"path"
 	"strings"
 
 	"rsc.io/rf/refactor"
@@ -29,9 +30,36 @@ func origin(obj types.Object) types.Object {
 }
 
 func cmdInject(snap *refactor.Snapshot, args string) error {
+	imports, args, err := parseImportFlags("inject", args)
+	if err != nil {
+		return err
+	}
+
+	for _, impPath := range imports {
+		var alias, ppath string
+		if a, p, ok := cut(impPath, " "); ok {
+			alias, ppath = a, strings.TrimLeft(p, " \t")
+		} else {
+			alias, ppath = "", impPath
+		}
+
+		var tpkg *types.Package
+		for _, p := range snap.Packages() {
+			if p.PkgPath == ppath && p.Types != nil {
+				tpkg = p.Types
+				break
+			}
+		}
+		if tpkg == nil {
+			tpkg = types.NewPackage(ppath, path.Base(ppath))
+		}
+		pos := snap.Target().Files[0].Syntax.Pos()
+		snap.NeedImport(pos, alias, tpkg)
+	}
+
 	items, _ := snap.EvalList(args)
 	if len(items) < 2 {
-		return newErrUsage("inject Var Func...")
+		return newErrUsage("inject [-i import] Var Func...")
 	}
 
 	for _, item := range items {
@@ -206,7 +234,7 @@ func cmdInject(snap *refactor.Snapshot, args string) error {
 					if outer.Kind == refactor.ItemPkg {
 						if pkg.Types == outer.Obj.(*types.PkgName).Imported() {
 							// Don't add an import if we are already in that package
-							name = strings.TrimPrefix(name, outer.Name + ".")
+							name = strings.TrimPrefix(name, outer.Name+".")
 							return
 						}
 						name = snap.NeedImport(stack[1].Pos(), "", outer.Obj.(*types.PkgName).Imported()) + strings.TrimPrefix(name, outer.Name)

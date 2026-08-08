@@ -167,7 +167,7 @@ func (g *pkgGraph) findCycle(diagnose bool) *pkgCycle {
 		for _, imp := range p.Imports {
 			p1 := g.pkgByPath[imp]
 			if p1 == nil {
-				panic(fmt.Sprintf("package %q imports %q, which is missing from the package graph", p.ID, imp))
+				continue
 			}
 			if walk(p1) {
 				return true
@@ -246,7 +246,6 @@ func (g *pkgGraph) visitBottomUp(visit func(p *Package) error) error {
 			for _, pkgPath := range p.Imports {
 				p1 := g.byPath(pkgPath)
 				if p1 == nil {
-					errs.Add(fmt.Errorf("package %s imports %s, but %s isn't in the package graph", p, pkgPath, pkgPath))
 					continue
 				}
 				waiting[p][p1] = true

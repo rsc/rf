@@ -1,0 +1,34 @@
+add -i "m/loader" -i "bytes" T.X Y loader.Loader
+add -i "fmt" C var D = fmt.Sprint(1)
+-- loader/loader.go --
+package loader
+
+type Loader struct{}
+-- x.go --
+package p
+
+const C = 1
+
+type T struct {
+	X int
+}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +1,15 @@
+ package p
+
++import (
++	"fmt"
++	"m/loader"
++)
++
+ const C = 1
+
++var D = fmt.Sprint(1)
++
+ type T struct {
+ 	X int
++	Y loader.Loader
+ }

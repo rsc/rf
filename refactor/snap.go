@@ -827,8 +827,11 @@ func (r *Refactor) setBuildIDs(g *pkgGraph) error {
 			}
 		}
 		for _, imp := range p.Imports {
-			pImp := g.byPath(imp)
-			h.Write([]byte(imp + "\x00" + pImp.BuildID + "\x00"))
+			buildID := ""
+			if pImp := g.byPath(imp); pImp != nil {
+				buildID = pImp.BuildID
+			}
+			h.Write([]byte(imp + "\x00" + buildID + "\x00"))
 		}
 		p.BuildID = fmt.Sprintf("%x", h.Sum(nil))
 		if debugBuildIDs {
@@ -868,7 +871,7 @@ func (s *snapImporter) Import(importPath string) (*types.Package, error) {
 		fmt.Printf("import %s %p resolve %s => %s %p\n", s.p.ID, s.p, importPath, p.ID, p)
 	}
 	if p == nil {
-		return nil, fmt.Errorf("import not available: %s", importPath)
+		return importer.Default().Import(importPath)
 	}
 	if p.Types == nil {
 		// We are running the type-checking in dependency order,

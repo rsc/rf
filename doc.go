@@ -120,7 +120,7 @@
 // The add command adds text to the source code. It takes as an argument the
 // address after which the text should be added, followed by the text itself.
 //
-//	add address text...
+//	add [-i import]... address text...
 //
 // The address may be a declaration, text range, file, or package.
 // In all cases, the text is added immediately after the addressed location:
@@ -209,7 +209,7 @@
 // threads it though all the functions it calls until it reaches a function that
 // uses the global variable with that name.
 //
-//	inject Var Func...
+//	inject [-i import]... Var Func...
 //
 // For example, given
 //

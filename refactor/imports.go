@@ -14,6 +14,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,11 +39,11 @@ func deleteUnusedImports(s *Snapshot, p *Package, text []byte) []byte {
 
 	match := func(name, importPath string) bool {
 		if name == "" {
-			p1 := s.pkgGraph.byPath(p.ImportMap.Lookup(importPath))
-			if p1 == nil {
-				panic("NO IMPORT: " + importPath)
+			if p1 := s.pkgGraph.byPath(p.ImportMap.Lookup(importPath)); p1 != nil {
+				name = p1.Name
+			} else {
+				name = path.Base(importPath)
 			}
-			name = p1.Name
 		}
 		return !used[name]
 	}
