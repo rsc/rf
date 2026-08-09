@@ -166,6 +166,11 @@
 //
 //	ex { import "log"; log.Error -> log.Panic }
 //
+// A rule can also replace a single statement with multiple statements by
+// wrapping the replacement sequence in curly braces:
+//
+//	ex { A() -> { B(); C() } }
+//
 // Declarations introduce typed pattern variables that can be used
 // in rules. For example, to simplify certain needlessly complex
 // uses of fmt.Sprintf:

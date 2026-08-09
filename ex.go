@@ -66,6 +66,81 @@ func cutGo(text, sep string) (before, after string, ok bool, err error) {
 	return before, after, ok, nil
 }
 
+func cutExStmt(text string) (stmt, rest string) {
+	depth := 0
+	inString := false
+	inChar := false
+	inRawString := false
+	inComment := false
+
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		if inComment {
+			if ch == '\n' {
+				inComment = false
+			}
+			continue
+		}
+		if inRawString {
+			if ch == '`' {
+				inRawString = false
+			}
+			continue
+		}
+		if inString {
+			if ch == '\\' {
+				i++
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		if inChar {
+			if ch == '\\' {
+				i++
+				continue
+			}
+			if ch == '\'' {
+				inChar = false
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(text) && text[i+1] == '/' {
+			inComment = true
+			i++
+			continue
+		}
+		if ch == '"' {
+			inString = true
+			continue
+		}
+		if ch == '\'' {
+			inChar = true
+			continue
+		}
+		if ch == '`' {
+			inRawString = true
+			continue
+		}
+		if ch == '{' {
+			depth++
+			continue
+		}
+		if ch == '}' {
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth == 0 && (ch == ';' || ch == '\n') {
+			return strings.TrimSpace(text[:i]), strings.TrimSpace(text[i+1:])
+		}
+	}
+	return strings.TrimSpace(text), ""
+}
+
 func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, error) {
 	fset := token.NewFileSet()
 	text = strings.TrimSpace(text)
@@ -122,7 +197,7 @@ func parseEx(snap *refactor.Snapshot, text string, isTypeAssert bool) (*exArgs, 
 		}
 	}
 	for text != "" {
-		stmt, rest, _ := cutAny(text, ";\n") // TODO
+		stmt, rest := cutExStmt(text)
 		text = rest
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
@@ -357,12 +432,17 @@ func (ex *exArgs) check() error {
 			pattern = x.Decl.(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type
 		}
 		if len(stmt.List) >= 2 {
-			subst = stmt.List[1].(*ast.BlockStmt).List[0]
-			switch x := subst.(type) {
-			case *ast.ExprStmt:
-				subst = x.X
-			case *ast.DeclStmt:
-				subst = x.Decl.(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type
+			substBlock := stmt.List[1].(*ast.BlockStmt)
+			if len(substBlock.List) == 1 {
+				subst = substBlock.List[0]
+				switch x := subst.(type) {
+				case *ast.ExprStmt:
+					subst = x.X
+				case *ast.DeclStmt:
+					subst = x.Decl.(*ast.GenDecl).Specs[0].(*ast.TypeSpec).Type
+				}
+			} else {
+				subst = substBlock
 			}
 		}
 		if ex.typeAssert {
@@ -698,7 +778,14 @@ func (m *matcher) applySubst(subst ast.Node, matchContext []ast.Node) (string, a
 		return "(" + buf.String() + ")", matchContext[0]
 	}
 
-	return buf.String(), matchContext[0]
+	res := buf.String()
+	if _, ok := subst.(*ast.BlockStmt); ok {
+		res = strings.TrimSpace(res)
+		if strings.HasPrefix(res, "{") && strings.HasSuffix(res, "}") {
+			res = strings.TrimSpace(res[1 : len(res)-1])
+		}
+	}
+	return res, matchContext[0]
 }
 
 func isPointer(t types.Type) bool {

@@ -1,0 +1,30 @@
+ex {
+	A() -> {
+		B()
+		C()
+	}
+}
+-- x.go --
+package p
+
+func f() {
+	A()
+}
+
+func A() {}
+func B() {}
+func C() {}
+-- stdout --
+diff old/x.go new/x.go
+--- old/x.go
++++ new/x.go
+@@ -1,7 +1,8 @@
+ package p
+
+ func f() {
+-	A()
++	B()
++	C()
+ }
+
+ func A() {}
