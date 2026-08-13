@@ -36,7 +36,24 @@ func deleteUnusedImports(s *Snapshot, p *Package, text []byte) []byte {
 		}
 	})
 
+	hasNonBlankImport := make(map[string]bool)
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			spec := spec.(*ast.ImportSpec)
+			if importName(spec) != "_" {
+				hasNonBlankImport[importPath(spec)] = true
+			}
+		}
+	}
+
 	match := func(name, importPath string) bool {
+		if name == "_" {
+			return hasNonBlankImport[importPath]
+		}
 		if name == "" {
 			p1 := s.pkgGraph.byPath(p.ImportMap.Lookup(importPath))
 			if p1 == nil {
@@ -288,8 +305,17 @@ func (s *Snapshot) addImportList(file string, list []NewImport) {
 			if needs[spec] == nil {
 				continue
 			}
-			makeBlock(impOf[spec])
 			for _, need := range needs[spec] {
+				if importName(spec) == "_" && importPath(spec) == need.pkg.Path() {
+					id := need.id
+					if id == need.pkg.Name() {
+						s.DeleteAt(spec.Name.Pos(), spec.Path.Pos())
+					} else {
+						s.ReplaceAt(spec.Name.Pos(), spec.Name.End(), id)
+					}
+					continue
+				}
+				makeBlock(impOf[spec])
 				id := need.id
 				if id == need.pkg.Name() {
 					id = ""
